@@ -1,4 +1,41 @@
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'codex';
+
+// ── Bound Process (server process monitoring) ─────────────────────────────────
+export interface BoundProcess {
+  /** Unique id (timestamp-based). */
+  id: string;
+  /** Human-readable label shown in the UI (e.g. "port:3000", "node"). */
+  label: string;
+  /** How the process was specified. */
+  bindType: 'port' | 'pid' | 'name';
+  /** The original bind specification string (port number, PID, or name). */
+  bindValue: string;
+  /** Resolved PID (null if not yet found or process exited). */
+  pid: number | null;
+  /** Process name (short). */
+  name: string;
+  /** Full command line (may be empty). */
+  command: string;
+  /** CPU usage percentage (from ps/si). */
+  cpu: number;
+  /** Memory percentage (from ps/si). */
+  mem: number;
+  /** Resident set size in MB. */
+  memRssMB: number;
+  /** False once the process has exited. */
+  alive: boolean;
+  /** Rolling history for the mini sparkline (same cadence as global stats). */
+  cpuHistory: number[];
+}
+
+/** Lightweight process entry used in the BindDialog process list. */
+export interface TopProc {
+  pid: number;
+  name: string;
+  cpu: number;
+  mem: number;
+  command: string;
+}
 export type AgentStatus = 'running' | 'waiting' | 'blocked' | 'done';
 
 export interface Message {

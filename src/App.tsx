@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import * as si from 'systeminformation';
 import { TitleBar } from './components/TitleBar.js';
 import { Sidebar } from './components/sidebar/Sidebar.js';
 import { MainColumn } from './components/MainColumn.js';
@@ -8,7 +9,9 @@ import { CheatSheet } from './components/CheatSheet.js';
 import { ResumeDialog } from './components/ResumeDialog.js';
 import { PermissionDialog } from './components/PermissionDialog.js';
 import { NewSessionDialog, resolveModelFlag, resolveEffortFlag } from './components/NewSessionDialog.js';
+import { BindDialog } from './components/BindDialog.js';
 import { useStore, makeAgent } from './store.js';
+import type { BoundProcess, TopProc } from './types.js';
 import { PermissionServer } from './claude/permissionServer.js';
 import { useSystemStats } from './hooks/useSystemStats.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
@@ -102,6 +105,12 @@ export function App(): React.ReactElement {
   const toggleCopyMode = useStore((state) => state.toggleCopyMode);
   const togglePaneCollapse = useStore((state) => state.togglePaneCollapse);
   const copyMode = useStore((state) => state.ui.copyMode);
+  const openBindDialog = useStore((state) => state.openBindDialog);
+  const closeBindDialog = useStore((state) => state.closeBindDialog);
+  const moveBindSelection = useStore((state) => state.moveBindSelection);
+  const setBindQuery = useStore((state) => state.setBindQuery);
+  const addBoundProcess = useStore((state) => state.addBoundProcess);
+  const removeBoundProcess = useStore((state) => state.removeBoundProcess);
 
   useSystemStats();
   // Pass stopAll as cleanup so SIGTERM/SIGINT set stopped=true on all sessions
@@ -530,6 +539,129 @@ export function App(): React.ReactElement {
       return; // swallow all other keys while in copy mode
     }
 
+    // ── Overlay: bind dialog ───────────────────────────────────────────────
+    if (topMode === 'bind') {
+      if (key.escape) { closeBindDialog(); return; }
+      if (key.upArrow) { moveBindSelection(-1); return; }
+      if (key.downArrow) { moveBindSelection(1); return; }
+      if (key.backspace || key.delete) {
+        const { query } = useStore.getState().bindDialog;
+        if (query.length > 0) {
+          setBindQuery(query.slice(0, -1));
+        } else {
+          // Empty query + backspace → remove the most recently added bound process
+          const bps = useStore.getState().boundProcesses;
+          if (bps.length > 0) {
+            removeBoundProcess(bps[bps.length - 1]!.id);
+          }
+        }
+        return;
+      }
+      if (key.return) {
+        const { query: bQuery, selectedIndex: bIdx, topProcs } = useStore.getState().bindDialog;
+        const filtered: TopProc[] = bQuery === ''
+          ? topProcs.slice(0, 10)
+          : topProcs.filter(
+              (p) =>
+                p.name.toLowerCase().includes(bQuery.toLowerCase()) ||
+                String(p.pid).includes(bQuery),
+            ).slice(0, 10);
+
+        // Resolve what to bind
+        let newBp: BoundProcess | null = null;
+        const selectedProc = filtered[bIdx];
+
+        if (selectedProc) {
+          // User selected from the list — bind by PID
+          newBp = {
+            id: `bp-${Date.now()}`,
+            label: selectedProc.name,
+            bindType: 'pid',
+            bindValue: String(selectedProc.pid),
+            pid: selectedProc.pid,
+            name: selectedProc.name,
+            command: selectedProc.command,
+            cpu: selectedProc.cpu,
+            mem: selectedProc.mem,
+            memRssMB: 0,
+            alive: true,
+            cpuHistory: [],
+          };
+        } else if (bQuery.trim().length > 0) {
+          // User typed a query — determine bind type
+          const q = bQuery.trim();
+          const asNumber = parseInt(q, 10);
+          if (!isNaN(asNumber) && asNumber > 0 && asNumber <= 65535) {
+            // Treat as port number
+            newBp = {
+              id: `bp-${Date.now()}`,
+              label: `port:${q}`,
+              bindType: 'port',
+              bindValue: q,
+              pid: null, // will be resolved on next poll
+              name: `port:${q}`,
+              command: '',
+              cpu: 0,
+              mem: 0,
+              memRssMB: 0,
+              alive: false,
+              cpuHistory: [],
+            };
+          } else if (!isNaN(asNumber) && asNumber > 65535) {
+            // Treat as PID
+            newBp = {
+              id: `bp-${Date.now()}`,
+              label: `pid:${q}`,
+              bindType: 'pid',
+              bindValue: q,
+              pid: asNumber,
+              name: `pid:${q}`,
+              command: '',
+              cpu: 0,
+              mem: 0,
+              memRssMB: 0,
+              alive: true,
+              cpuHistory: [],
+            };
+          } else {
+            // Treat as process name
+            const nameMatch = topProcs.find((p) =>
+              p.name.toLowerCase().includes(q.toLowerCase()),
+            );
+            newBp = {
+              id: `bp-${Date.now()}`,
+              label: q,
+              bindType: 'name',
+              bindValue: q,
+              pid: nameMatch?.pid ?? null,
+              name: nameMatch?.name ?? q,
+              command: nameMatch?.command ?? '',
+              cpu: nameMatch?.cpu ?? 0,
+              mem: nameMatch?.mem ?? 0,
+              memRssMB: 0,
+              alive: nameMatch !== undefined,
+              cpuHistory: [],
+            };
+          }
+        }
+
+        if (newBp) {
+          addBoundProcess(newBp);
+        }
+        closeBindDialog();
+        return;
+      }
+      // Delete binding: Del key with no text typed removes the nearest bound process
+      // (handled above as backspace/delete when query is empty)
+      // Printable characters → append to query
+      if (input && input.length > 0 && !key.ctrl && !key.meta) {
+        const { query: bQuery2 } = useStore.getState().bindDialog;
+        setBindQuery(bQuery2 + input);
+        return;
+      }
+      return; // swallow all other keys
+    }
+
     // ── Base mode (no overlay) ─────────────────────────────────────────────
 
     // Global shortcuts — active in both select and active mode.
@@ -554,6 +686,28 @@ export function App(): React.ReactElement {
     if (key.ctrl && input === 'f') { cycleAgentFilter(); return; }
     if (key.ctrl && input === 'y') { toggleCopyMode(); return; }
     if (key.ctrl && input === 'k') { togglePaneCollapse('keybindings'); return; }
+    if (key.ctrl && input === 'b') {
+      // Fetch top-CPU processes async, then open the dialog
+      si.processes()
+        .then((procsData) => {
+          const topProcs: TopProc[] = procsData.list
+            .filter((p) => p.pid > 0)
+            .sort((a, b) => b.cpu - a.cpu)
+            .slice(0, 20)
+            .map((p) => ({
+              pid: p.pid,
+              name: p.name,
+              cpu: Math.round(p.cpu * 10) / 10,
+              mem: Math.round(p.mem * 10) / 10,
+              command: p.command ?? '',
+            }));
+          openBindDialog(topProcs);
+        })
+        .catch(() => {
+          openBindDialog([]); // open even if process list fails
+        });
+      return;
+    }
     if (key.ctrl && input === 'x') {
       const store = useStore.getState();
       const agent = store.agents.find((a) => a.id === store.focusedAgentId);
@@ -671,6 +825,7 @@ export function App(): React.ReactElement {
       <ResumeDialog />
       <PermissionDialog />
       <NewSessionDialog />
+      <BindDialog />
     </Box>
   );
 }

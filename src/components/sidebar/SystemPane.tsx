@@ -2,11 +2,31 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import { useStore } from '../../store.js';
 
-// ── Braille sparkline helper ────────────────────────────────────────────────
-// Each braille char encodes 2 columns × 4 dot rows (left: dots 1,2,3,7; right: dots 4,5,6,8).
-// We use the bottom-up column fill to create a 1-row sparkline.
-// Left column bits (fill level 0-4): dot7(bit6), dot3(bit2), dot2(bit1), dot1(bit0)
-// Right column bits (fill level 0-4): dot8(bit7), dot6(bit5), dot5(bit4), dot4(bit3)
+// ── Block sparkline helper ──────────────────────────────────────────────────
+// Uses Unicode block characters ▁▂▃▄▅▆▇█ (8 levels) + space (empty).
+// Much more readable than braille in fonts where braille dots are tiny.
+const BLOCK_CHARS = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'] as const;
+
+/**
+ * Render a block-character sparkline from a history array.
+ * charCount = number of chars in output (1 data point per char).
+ * maxVal: if provided, scale is fixed (good for 0-100%); else uses dynamic max.
+ */
+export function renderBlock(history: number[], charCount: number = 8, maxVal?: number): string {
+  const max = maxVal !== undefined ? maxVal : Math.max(1, ...history);
+  const needed = charCount;
+  const padded: number[] = Array(Math.max(0, needed - history.length)).fill(0);
+  padded.push(...history);
+  const src = padded.slice(-needed);
+  return src
+    .map((v) => {
+      const level = max <= 0 ? 0 : Math.min(8, Math.round((Math.max(0, v) / max) * 8));
+      return BLOCK_CHARS[level]!;
+    })
+    .join('');
+}
+
+// ── Braille sparkline helper (kept for compact NET graphs) ──────────────────
 const BRAILLE_LEFT = [0x00, 0x40, 0x44, 0x46, 0x47] as const;
 const BRAILLE_RIGHT = [0x00, 0x80, 0xa0, 0xb0, 0xb8] as const;
 
@@ -15,19 +35,12 @@ function toLevel(value: number, max: number): number {
   return Math.min(4, Math.round((Math.max(0, value) / max) * 4));
 }
 
-/**
- * Render a braille sparkline from a history array.
- * charCount braille chars = charCount*2 data points displayed.
- * maxVal: if provided, scale is fixed (good for 0-100%); otherwise uses dynamic max.
- */
 export function renderBraille(history: number[], charCount: number = 8, maxVal?: number): string {
   const max = maxVal !== undefined ? maxVal : Math.max(1, ...history);
   const needed = charCount * 2;
-  // Pad left with zeros if history is shorter than needed
   const padded: number[] = Array(Math.max(0, needed - history.length)).fill(0);
   padded.push(...history);
   const src = padded.slice(-needed);
-
   let result = '';
   for (let i = 0; i < charCount; i++) {
     const leftLevel = toLevel(src[i * 2] ?? 0, max);
@@ -45,19 +58,30 @@ function pctColor(pct: number): string {
 }
 
 // ── Network speed formatter ─────────────────────────────────────────────────
-function formatKBs(kbs: number): string {
-  if (kbs >= 1024) return `${(kbs / 1024).toFixed(1)}M`;
-  if (kbs >= 1) return `${Math.round(kbs)}K`;
-  return '0K';
+/**
+ * Format KB/s into a human-readable speed string.
+ * Returns strings like "1.2MB/s", "512KB/s", " <1KB/s" (padded to 8 chars).
+ */
+function formatNetSpeed(kbs: number): string {
+  if (kbs >= 1024) return `${(kbs / 1024).toFixed(1)}MB/s`;
+  if (kbs >= 1) return `${Math.round(kbs)}KB/s`;
+  return '<1KB/s';
 }
 
+/** Format token count for CTX display. */
 function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return String(n);
 }
 
-// 8-char bar (fallback for CTX gauge)
+/** Format memory in GB for display, e.g. "9.8G". */
+function formatGB(gb: number): string {
+  if (gb >= 10) return `${Math.round(gb)}G`;
+  return `${gb.toFixed(1)}G`;
+}
+
+// 8-char bar (for CTX gauge)
 function renderBar(value: number, width: number = 8): string {
   const filled = Math.round((value / 100) * width);
   const empty = width - filled;
@@ -65,9 +89,10 @@ function renderBar(value: number, width: number = 8): string {
 }
 
 export function SystemPane(): React.ReactElement {
-  const { cpu, mem, net, disk, cpuHistory, memHistory, netRxHistory, netTxHistory } = useStore(
+  const { cpu, mem, memTotalGB, net, disk, cpuHistory, memHistory, netRxHistory, netTxHistory } = useStore(
     (state) => state.system,
   );
+  const boundProcesses = useStore((state) => state.boundProcesses);
 
   // CTX%: read from focused agent's latest usage data
   const focusedAgentId = useStore((state) => state.focusedAgentId);
@@ -80,14 +105,14 @@ export function SystemPane(): React.ReactElement {
     return agent?.contextWindow ?? 0;
   });
 
-  // Braille sparklines (8 chars = 16 data points)
-  const cpuGraph = renderBraille(cpuHistory, 8, 100);
-  const memGraph = renderBraille(memHistory, 8, 100);
-  // NET uses dynamic max so relative traffic changes are visible
-  const netRxGraph = renderBraille(netRxHistory, 6);
-  const netTxGraph = renderBraille(netTxHistory, 6);
+  // Block sparklines — 8 chars each (8 data points, more readable than braille)
+  const cpuGraph = renderBlock(cpuHistory, 8, 100);
+  const memGraph = renderBlock(memHistory, 8, 100);
+  // NET: braille (6 chars = 12 points) gives smoother traffic curve in compact space
+  const netRxGraph = renderBraille(netRxHistory, 5);
+  const netTxGraph = renderBraille(netTxHistory, 5);
 
-  // CTX gauge (keep existing bar style — distinct from system metrics)
+  // CTX gauge
   const ctxPct = contextWindow > 0 ? Math.round((contextTokens / contextWindow) * 100) : 0;
   const ctxBar = contextWindow > 0 ? renderBar(ctxPct) : '░'.repeat(8);
   const ctxColor = ctxPct >= 95 ? 'red' : ctxPct >= 80 ? 'yellow' : 'green';
@@ -100,8 +125,14 @@ export function SystemPane(): React.ReactElement {
     ctxLabel = `${ctxPct}% ${cur}/${win}`;
   }
 
-  const rxLabel = formatKBs(net.rxKBs);
-  const txLabel = formatKBs(net.txKBs);
+  // MEM used amount (in GB)
+  const memUsedGB = memTotalGB > 0 ? (mem / 100) * memTotalGB : null;
+  const memSuffix = memUsedGB !== null && memTotalGB > 0
+    ? ` ${formatGB(memUsedGB)}/${formatGB(memTotalGB)}`
+    : '';
+
+  const rxLabel = formatNetSpeed(net.rxKBs).padStart(8);
+  const txLabel = formatNetSpeed(net.txKBs).padStart(8);
 
   return (
     <Box
@@ -115,41 +146,46 @@ export function SystemPane(): React.ReactElement {
       <Text bold color="white">
         시스템
       </Text>
-      {/* CPU sparkline */}
-      <Text color={pctColor(cpu)}>
-        {'CPU '}
-        {cpuGraph}
-        {' '}
-        {String(cpu).padStart(3)}{'%'}
-      </Text>
-      {/* MEM sparkline */}
-      <Text color={pctColor(mem)}>
-        {'MEM '}
-        {memGraph}
-        {' '}
-        {String(mem).padStart(3)}{'%'}
-      </Text>
+
+      {/* CPU block sparkline + value */}
+      <Box flexDirection="row">
+        <Text color={pctColor(cpu)}>{'CPU '}</Text>
+        <Text color={pctColor(cpu)}>{cpuGraph}</Text>
+        <Text color={pctColor(cpu)} bold>{' '}{String(cpu).padStart(3)}{'%'}</Text>
+      </Box>
+
+      {/* MEM block sparkline + value + used/total */}
+      <Box flexDirection="row">
+        <Text color={pctColor(mem)}>{'MEM '}</Text>
+        <Text color={pctColor(mem)}>{memGraph}</Text>
+        <Text color={pctColor(mem)} bold>{' '}{String(mem).padStart(3)}{'%'}</Text>
+        {memSuffix.length > 0 && (
+          <Text color="gray">{memSuffix}</Text>
+        )}
+      </Box>
+
       {/* NET RX (download) */}
-      <Text color="cyan">
-        {'↓RX '}
-        {netRxGraph}
-        {' '}
-        {rxLabel.padStart(4)}
-      </Text>
+      <Box flexDirection="row">
+        <Text color="cyan">{'↓'}</Text>
+        <Text color="cyan">{rxLabel}</Text>
+        <Text color="cyan">{' '}{netRxGraph}</Text>
+      </Box>
+
       {/* NET TX (upload) */}
-      <Text color="cyan">
-        {'↑TX '}
-        {netTxGraph}
-        {' '}
-        {txLabel.padStart(4)}
-      </Text>
-      {/* Disk bar (static bar is fine — disk % changes slowly) */}
+      <Box flexDirection="row">
+        <Text color="cyan">{'↑'}</Text>
+        <Text color="cyan">{txLabel}</Text>
+        <Text color="cyan">{' '}{netTxGraph}</Text>
+      </Box>
+
+      {/* Disk bar */}
       <Text color="magenta">
         {'DSK ['}
         {renderBar(disk.usedPct)}
         {'] '}
         {String(disk.usedPct).padStart(3)}{'%'}
       </Text>
+
       {/* CTX gauge — keep existing style */}
       <Text color={ctxColor}>
         {'CTX ['}
@@ -157,6 +193,45 @@ export function SystemPane(): React.ReactElement {
         {'] '}
         {ctxLabel}
       </Text>
+
+      {/* Bound Processes section — hidden when no processes are bound */}
+      {boundProcesses.length > 0 && (
+        <>
+          <Text color="gray" dimColor>{'─'.repeat(28)}</Text>
+          <Text bold color="white">{'서버'}</Text>
+          {boundProcesses.map((bp) => {
+            const procColor = bp.alive ? pctColor(bp.cpu) : 'gray';
+            // Mini sparkline: 4 chars
+            const miniGraph = renderBlock(bp.cpuHistory, 4, 100);
+            // Label: name truncated to fit
+            const nameLabel = (bp.name || bp.label).slice(0, 10).padEnd(10);
+            const cpuStr = bp.alive ? `${String(Math.round(bp.cpu)).padStart(3)}%` : '종료됨';
+            const memStr = bp.alive ? `${bp.memRssMB.toFixed(0)}M` : '';
+            return (
+              <Box key={bp.id} flexDirection="column">
+                <Box flexDirection="row">
+                  <Text color={bp.alive ? 'green' : 'red'}>
+                    {bp.alive ? '● ' : '○ '}
+                  </Text>
+                  <Text color={procColor}>{nameLabel}</Text>
+                </Box>
+                <Box flexDirection="row" marginLeft={2}>
+                  <Text color={procColor}>{miniGraph}</Text>
+                  <Text color={procColor} bold>{' '}{cpuStr}</Text>
+                  {memStr.length > 0 && (
+                    <Text color="gray">{' '}{memStr}</Text>
+                  )}
+                </Box>
+                <Box flexDirection="row" marginLeft={2}>
+                  <Text color="gray" dimColor>
+                    {bp.bindType === 'port' ? `port:${bp.bindValue}` : `pid:${bp.pid ?? '?'}`}
+                  </Text>
+                </Box>
+              </Box>
+            );
+          })}
+        </>
+      )}
     </Box>
   );
 }

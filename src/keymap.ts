@@ -1,6 +1,6 @@
 // ── Mode types ─────────────────────────────────────────────────────────────────
 /** Overlay modes that sit on top of the base key routing. */
-export type KeyMode = 'cheatsheet' | 'resume' | 'slash' | 'file' | 'permission' | 'newsession' | 'copy';
+export type KeyMode = 'cheatsheet' | 'resume' | 'slash' | 'file' | 'permission' | 'newsession' | 'copy' | 'bind';
 
 // ── Context-based key binding map ──────────────────────────────────────────────
 export type KeyContext =
@@ -16,7 +16,8 @@ export type KeyContext =
   | 'overlay-cheatsheet'
   | 'overlay-permission'
   | 'overlay-newsession'
-  | 'overlay-copy';
+  | 'overlay-copy'
+  | 'overlay-bind';
 
 export interface ContextKeyEntry {
   key: string;
@@ -43,6 +44,7 @@ export const KEYMAP_CONTEXTS: Record<KeyContext, ContextKeyEntry[]> = {
     { key: 'Ctrl+F',      desc: '에이전트 필터 순환',    action: 'cycleFilter' },
     { key: 'Ctrl+X',      desc: '현재 턴 인터럽트 (실행 중)',  action: 'interrupt' },
     { key: 'Ctrl+Y',      desc: 'Copy mode (텍스트 선택/복사)', action: 'copyMode' },
+    { key: 'Ctrl+B',      desc: '프로세스 바인딩',       action: 'bindProcess' },
     { key: '?',           desc: '단축키 도움말',         action: 'cheatsheet' },
   ],
   select: [
@@ -106,6 +108,12 @@ export const KEYMAP_CONTEXTS: Record<KeyContext, ContextKeyEntry[]> = {
   'overlay-copy': [
     { key: 'Ctrl+Y',    desc: 'Copy mode 종료 / 복귀',  action: 'exitCopyMode' },
   ],
+  'overlay-bind': [
+    { key: '↑↓',       desc: '프로세스 선택',           action: 'navigate' },
+    { key: 'Enter',    desc: '바인딩 확정',              action: 'bind' },
+    { key: 'Delete',   desc: '바인딩 제거',              action: 'unbind' },
+    { key: 'Esc',      desc: '닫기',                    action: 'close' },
+  ],
 };
 
 // ── Legacy constant (used by App.tsx for action names) ─────────────────────────
@@ -143,6 +151,7 @@ export const CHEATSHEET_ENTRIES = [
   { key: 'Tab / Enter (팝업)', desc: '명령어 선택' },
   { key: 'Esc (팝업)',        desc: '팝업 닫기' },
   { key: 'Ctrl+Y',            desc: 'Copy mode 진입/복귀 (텍스트 선택)' },
+  { key: 'Ctrl+B',            desc: '프로세스 바인딩 다이얼로그' },
   { key: 'Ctrl+U (입력창)',             desc: '입력창 전체 지우기 (kill-line)' },
   { key: '↑↓ (입력창 비어있을 때)',     desc: '명령 히스토리 탐색 (최근 50개)' },
 ];
