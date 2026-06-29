@@ -167,7 +167,7 @@ export function SystemPane(): React.ReactElement {
   return (
     <Box
       borderStyle="single"
-      borderColor="gray"
+      borderColor="green"
       flexDirection="column"
       flexShrink={0}
       overflow="hidden"

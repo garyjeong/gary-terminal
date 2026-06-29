@@ -73,7 +73,7 @@ export function AgentSwitcher(): React.ReactElement {
   const isSelected = focusRegion === 'agents';
   const isActive = isSelected && focusMode === 'active';
   const isFocused = isActive; // kept for backward compat with internal usage
-  const borderColor = !isSelected ? 'gray' : isActive ? 'cyan' : 'yellow';
+  const borderColor = !isSelected ? 'blue' : isActive ? 'cyan' : 'yellow';
 
   // Apply filter to agents list
   const filteredAgents = agents.filter((a) => {

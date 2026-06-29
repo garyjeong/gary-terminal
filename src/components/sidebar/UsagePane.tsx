@@ -33,7 +33,7 @@ export function UsagePane(): React.ReactElement {
   return (
     <Box
       borderStyle="single"
-      borderColor={isFocused ? 'cyan' : 'gray'}
+      borderColor="yellow"
       flexDirection="column"
       flexShrink={0}
       overflow="hidden"

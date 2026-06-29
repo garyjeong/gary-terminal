@@ -25,7 +25,8 @@ export function KeybindingsPane(): React.ReactElement {
   return (
     <Box
       borderStyle="single"
-      borderColor="gray"
+      borderColor="blue"
+      borderDimColor
       flexDirection="column"
       flexShrink={1}
       overflow="hidden"

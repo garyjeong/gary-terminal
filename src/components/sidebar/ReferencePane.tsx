@@ -12,7 +12,7 @@ export function ReferencePane(): React.ReactElement {
   const isSelected = focusRegion === 'reference';
   const isActive = isSelected && focusMode === 'active';
   const isFocused = isActive; // kept for section-color logic
-  const borderColor = !isSelected ? 'gray' : isActive ? 'cyan' : 'yellow';
+  const borderColor = !isSelected ? 'magenta' : isActive ? 'cyan' : 'yellow';
 
   function sectionColor(section: 'skills' | 'mcp' | 'codex'): string {
     if (!isFocused) return 'blue';
