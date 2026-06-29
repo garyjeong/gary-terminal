@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Agent, AgentStatus, AgentUsage, Message, ToolCallState } from './types.js';
+import type { Agent, AgentStatus, AgentUsage, Message, ToolCallState, SubagentInfo } from './types.js';
 import type { SkillInfo } from './data/skills.js';
 import type { McpInfo } from './data/mcp.js';
 import type { UsageHistory } from './data/usageHistory.js';
@@ -7,6 +7,7 @@ import type { ClaudeUsage } from './data/claudeUsage.js';
 import type { CodexUsage } from './data/codexUsage.js';
 import { filterSlashCommands } from './data/slashCommands.js';
 import type { SlashCommand } from './data/slashCommands.js';
+import { filterFiles } from './data/fileSearch.js';
 import type { SessionEvent } from './claude/session.js';
 import type { SessionMeta } from './data/sessionStore.js';
 import type { KeyMode } from './keymap.js';
@@ -106,6 +107,17 @@ interface AppState {
     filteredCommands: SlashCommand[];
   };
 
+  fileAutocomplete: {
+    open: boolean;
+    query: string;
+    selectedIndex: number;
+    /** All scanned file paths (relative, populated once on startup). */
+    allFiles: string[];
+    filteredFiles: string[];
+    /** True when the 5000-file cap was reached during scan. */
+    truncated: boolean;
+  };
+
   // ── Actions ──────────────────────────────────────────────────────────────
 
   /**
@@ -149,6 +161,8 @@ interface AppState {
   updateToolCallInAgent: (agentId: string, toolUseId: string, status: 'done' | 'error', result?: string) => void;
   /** Update toolStatus on the message linked to toolCallId */
   updateMessageToolStatus: (agentId: string, toolCallId: string, status: 'ok' | 'error') => void;
+  /** Mark that AGENTS.md was loaded for this agent's session */
+  setAgentsMdLoaded: (agentId: string, loaded: boolean) => void;
 
   // ② Scroll actions
   scrollConversation: (delta: number) => void;
@@ -175,6 +189,13 @@ interface AppState {
   setSlashQuery: (query: string) => void;
   moveSlashSelection: (delta: number) => void;
 
+  // File autocomplete actions
+  setFileList: (files: string[], truncated: boolean) => void;
+  openFileAutocomplete: (query: string) => void;
+  closeFileAutocomplete: () => void;
+  setFileQuery: (query: string) => void;
+  moveFileSelection: (delta: number) => void;
+
   // Resume dialog
   resumeDialog: {
     open: boolean;
@@ -184,6 +205,16 @@ interface AppState {
   openResumeDialog: (sessions: SessionMeta[]) => void;
   closeResumeDialog: () => void;
   moveResumeSelection: (delta: number) => void;
+
+  // Permission dialog
+  permissionDialog: {
+    open: boolean;
+    toolName: string;
+    toolInput: Record<string, unknown>;
+    toolUseId: string;
+  };
+  openPermissionDialog: (toolName: string, toolInput: Record<string, unknown>, toolUseId: string) => void;
+  closePermissionDialog: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +234,8 @@ function makeAgent(id: string, title: string): Agent {
     toolCalls: [],
     contextTokens: 0,
     contextWindow: 0,
+    subagents: [],
+    agentsMdLoaded: false,
   };
 }
 
@@ -267,10 +300,26 @@ export const useStore = create<AppState>()((set) => ({
     filteredCommands: [],
   },
 
+  fileAutocomplete: {
+    open: false,
+    query: '',
+    selectedIndex: 0,
+    allFiles: [],
+    filteredFiles: [],
+    truncated: false,
+  },
+
   resumeDialog: {
     open: false,
     selectedIndex: 0,
     sessions: [],
+  },
+
+  permissionDialog: {
+    open: false,
+    toolName: '',
+    toolInput: {},
+    toolUseId: '',
   },
 
   // ── Session event reducer ────────────────────────────────────────────────
@@ -443,6 +492,38 @@ export const useStore = create<AppState>()((set) => ({
               ),
             };
           }),
+        }));
+        break;
+
+      case 'subagent_start': {
+        const newSubagent: SubagentInfo = {
+          id: evt.id,
+          agentType: evt.agentType,
+          status: 'running',
+          parentToolUseId: evt.parentToolUseId,
+        };
+        set((state) => ({
+          agents: state.agents.map((a) =>
+            a.id === agentId
+              ? { ...a, subagents: [...a.subagents, newSubagent] }
+              : a,
+          ),
+        }));
+        break;
+      }
+
+      case 'subagent_stop':
+        set((state) => ({
+          agents: state.agents.map((a) =>
+            a.id === agentId
+              ? {
+                  ...a,
+                  subagents: a.subagents.map((s) =>
+                    s.id === evt.id ? { ...s, status: 'done' as const } : s,
+                  ),
+                }
+              : a,
+          ),
         }));
         break;
 
@@ -716,6 +797,13 @@ export const useStore = create<AppState>()((set) => ({
       }),
     })),
 
+  setAgentsMdLoaded: (agentId: string, loaded: boolean) =>
+    set((state) => ({
+      agents: state.agents.map((a) =>
+        a.id === agentId ? { ...a, agentsMdLoaded: loaded } : a,
+      ),
+    })),
+
   // ── Scroll actions ───────────────────────────────────────────────────────
 
   scrollConversation: (delta: number) =>
@@ -833,6 +921,80 @@ export const useStore = create<AppState>()((set) => ({
       };
     }),
 
+  // ── File autocomplete actions ────────────────────────────────────────────
+
+  setFileList: (files: string[], truncated: boolean) =>
+    set((state) => ({
+      fileAutocomplete: {
+        ...state.fileAutocomplete,
+        allFiles: files,
+        truncated,
+        filteredFiles: state.fileAutocomplete.open
+          ? filterFiles(files, state.fileAutocomplete.query)
+          : state.fileAutocomplete.filteredFiles,
+      },
+    })),
+
+  openFileAutocomplete: (query: string) =>
+    set((state) => {
+      const top = state.ui.modeStack[state.ui.modeStack.length - 1];
+      const newStack: KeyMode[] = top === 'file'
+        ? state.ui.modeStack
+        : [...state.ui.modeStack, 'file'];
+      return {
+        fileAutocomplete: {
+          ...state.fileAutocomplete,
+          open: true,
+          query,
+          selectedIndex: 0,
+          filteredFiles: filterFiles(state.fileAutocomplete.allFiles, query),
+        },
+        ui: { ...state.ui, modeStack: newStack },
+      };
+    }),
+
+  closeFileAutocomplete: () =>
+    set((state) => {
+      const top = state.ui.modeStack[state.ui.modeStack.length - 1];
+      const newStack: KeyMode[] = top === 'file'
+        ? state.ui.modeStack.slice(0, -1)
+        : state.ui.modeStack;
+      return {
+        fileAutocomplete: {
+          ...state.fileAutocomplete,
+          open: false,
+          query: '',
+          selectedIndex: 0,
+          filteredFiles: [],
+        },
+        ui: { ...state.ui, modeStack: newStack },
+      };
+    }),
+
+  setFileQuery: (query: string) =>
+    set((state) => ({
+      fileAutocomplete: {
+        ...state.fileAutocomplete,
+        query,
+        selectedIndex: 0,
+        filteredFiles: filterFiles(state.fileAutocomplete.allFiles, query),
+      },
+    })),
+
+  moveFileSelection: (delta: number) =>
+    set((state) => {
+      const { selectedIndex, filteredFiles } = state.fileAutocomplete;
+      const len = filteredFiles.length;
+      if (len === 0) return state;
+      const next = ((selectedIndex + delta) % len + len) % len;
+      return {
+        fileAutocomplete: {
+          ...state.fileAutocomplete,
+          selectedIndex: next,
+        },
+      };
+    }),
+
   // ── Resume dialog actions ────────────────────────────────────────────────
 
   openResumeDialog: (sessions: SessionMeta[]) =>
@@ -869,6 +1031,32 @@ export const useStore = create<AppState>()((set) => ({
       const next = ((selectedIndex + delta) % len + len) % len;
       return {
         resumeDialog: { ...state.resumeDialog, selectedIndex: next },
+      };
+    }),
+
+  // ── Permission dialog actions ────────────────────────────────────────────
+
+  openPermissionDialog: (toolName, toolInput, toolUseId) =>
+    set((state) => {
+      const top = state.ui.modeStack[state.ui.modeStack.length - 1];
+      const newStack: KeyMode[] = top === 'permission'
+        ? state.ui.modeStack
+        : [...state.ui.modeStack, 'permission'];
+      return {
+        permissionDialog: { open: true, toolName, toolInput, toolUseId },
+        ui: { ...state.ui, modeStack: newStack },
+      };
+    }),
+
+  closePermissionDialog: () =>
+    set((state) => {
+      const top = state.ui.modeStack[state.ui.modeStack.length - 1];
+      const newStack: KeyMode[] = top === 'permission'
+        ? state.ui.modeStack.slice(0, -1)
+        : state.ui.modeStack;
+      return {
+        permissionDialog: { ...state.permissionDialog, open: false },
+        ui: { ...state.ui, modeStack: newStack },
       };
     }),
 }));

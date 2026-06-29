@@ -26,6 +26,17 @@ export interface AgentUsage {
   costUsd: number;
 }
 
+/**
+ * A subagent spawned by this session (from SubagentStart/Stop hook events).
+ * parentToolUseId links to the Task/Agent tool_use that spawned this subagent.
+ */
+export interface SubagentInfo {
+  id: string;
+  agentType: string;
+  status: 'running' | 'done';
+  parentToolUseId?: string;
+}
+
 export interface Agent {
   id: string;
   title: string;
@@ -45,4 +56,8 @@ export interface Agent {
   contextTokens: number;
   /** Max context window for this agent's model (0 = unknown) */
   contextWindow: number;
+  /** Subagents spawned during this session (from SubagentStart/Stop events) */
+  subagents: SubagentInfo[];
+  /** True when AGENTS.md was found in cwd and injected via --append-system-prompt */
+  agentsMdLoaded: boolean;
 }

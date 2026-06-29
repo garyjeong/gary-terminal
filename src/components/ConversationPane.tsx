@@ -2,6 +2,7 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import { useStore } from '../store.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
+import { useSpinner } from '../hooks/useSpinner.js';
 import type { Message } from '../types.js';
 import { MarkdownText } from '../utils/renderMarkdown.js';
 
@@ -101,6 +102,11 @@ export function ConversationPane(): React.ReactElement {
   // Per-agent streaming text
   const streamingText = focusedAgent?.streamingText ?? '';
 
+  // Show thinking spinner: agent is running but no streaming text yet (first-token wait)
+  const isThinking =
+    focusedAgent?.status === 'running' && streamingText === '' && scrollOffset === 0;
+  const spinnerFrame = useSpinner(isThinking);
+
   // ② Determine which messages to render.
   const displayMessages =
     scrollOffset > 0
@@ -135,6 +141,9 @@ export function ConversationPane(): React.ReactElement {
           {focusedAgent?.title ?? ''}
           {'"'}
         </Text>
+        {focusedAgent?.agentsMdLoaded && (
+          <Text color="green" dimColor> AGENTS.md ✓</Text>
+        )}
         {scrollOffset > 0 && (
           <Text color="yellow" dimColor>{scrollIndicator}</Text>
         )}
@@ -157,6 +166,12 @@ export function ConversationPane(): React.ReactElement {
           <Box flexDirection="row">
             <Text color="cyan" dimColor>▍ </Text>
             <Text color="white" wrap="wrap">{streamingText}</Text>
+          </Box>
+        )}
+        {isThinking && (
+          <Box flexDirection="row">
+            <Text color="cyan" dimColor>{spinnerFrame} </Text>
+            <Text color="gray" dimColor>생각 중…</Text>
           </Box>
         )}
       </Box>

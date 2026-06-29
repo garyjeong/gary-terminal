@@ -1,6 +1,6 @@
 // ── Mode types ─────────────────────────────────────────────────────────────────
 /** Overlay modes that sit on top of the base key routing. */
-export type KeyMode = 'cheatsheet' | 'resume' | 'slash';
+export type KeyMode = 'cheatsheet' | 'resume' | 'slash' | 'file' | 'permission';
 
 // ── Context-based key binding map ──────────────────────────────────────────────
 export type KeyContext =
@@ -11,8 +11,10 @@ export type KeyContext =
   | 'active-reference'
   | 'active-conversation'
   | 'overlay-slash'
+  | 'overlay-file'
   | 'overlay-resume'
-  | 'overlay-cheatsheet';
+  | 'overlay-cheatsheet'
+  | 'overlay-permission';
 
 export interface ContextKeyEntry {
   key: string;
@@ -56,7 +58,8 @@ export const KEYMAP_CONTEXTS: Record<KeyContext, ContextKeyEntry[]> = {
   ],
   'active-reference': [
     { key: '↑↓',         desc: '참조 섹션 이동',        action: 'moveSection' },
-    { key: 'Space',       desc: '섹션 펼침/접기',        action: 'toggleSection' },
+    { key: '→/←',        desc: '섹션 펼침/접음',        action: 'expandCollapseSection' },
+    { key: 'Space',       desc: '섹션 펼침/접기 토글',   action: 'toggleSection' },
     { key: 'Esc',         desc: '패널 나가기',           action: 'exitPanel' },
   ],
   'active-conversation': [
@@ -70,6 +73,11 @@ export const KEYMAP_CONTEXTS: Record<KeyContext, ContextKeyEntry[]> = {
     { key: 'Tab / Enter', desc: '명령어 선택',           action: 'select' },
     { key: 'Esc',         desc: '팝업 닫기',             action: 'close' },
   ],
+  'overlay-file': [
+    { key: '↑↓',         desc: '파일 이동',             action: 'navigate' },
+    { key: 'Tab / Enter', desc: '파일 선택',             action: 'select' },
+    { key: 'Esc',         desc: '팝업 닫기',             action: 'close' },
+  ],
   'overlay-resume': [
     { key: '↑↓',         desc: '세션 이동',             action: 'navigate' },
     { key: 'Enter',       desc: '세션 재개',             action: 'resume' },
@@ -77,6 +85,10 @@ export const KEYMAP_CONTEXTS: Record<KeyContext, ContextKeyEntry[]> = {
   ],
   'overlay-cheatsheet': [
     { key: '? / Esc',    desc: '닫기',                  action: 'close' },
+  ],
+  'overlay-permission': [
+    { key: 'y',          desc: '승인 (allow)',           action: 'allow' },
+    { key: 'n / Esc',   desc: '거부 (deny)',             action: 'deny' },
   ],
 };
 
@@ -98,7 +110,8 @@ export const CHEATSHEET_ENTRIES = [
   { key: '↑↓ (에이전트)',    desc: '에이전트 전환' },
   { key: 'Ctrl+F',            desc: '에이전트 필터 순환 (전체/활성/대기중)' },
   { key: '↑↓ (참조)',        desc: '참조 섹션 이동' },
-  { key: 'Space (참조)',      desc: '섹션 펼침/접기' },
+  { key: '→/← (참조)',       desc: '섹션 펼침/접음' },
+  { key: 'Space (참조)',      desc: '섹션 펼침/접기 토글' },
   { key: '↑↓ (대화)',        desc: '대화 스크롤' },
   { key: 'PgUp / Ctrl+U',    desc: '대화 위로 스크롤' },
   { key: 'PgDn / Ctrl+D',    desc: '대화 아래로 스크롤' },

@@ -68,7 +68,7 @@ export function ReferencePane(): React.ReactElement {
       </Text>
       {isSelected && (
         <Text color="gray" dimColor>
-          {isActive ? '↑↓ 이동 · Space 펼침 · Esc 나가기' : 'Enter 진입'}
+          {isActive ? '↑↓ 이동 · →펼침/←접음 · Esc 나가기' : 'Enter 진입'}
         </Text>
       )}
 

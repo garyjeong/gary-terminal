@@ -50,7 +50,23 @@ export type SessionEvent =
   | { type: 'status'; status: 'running' | 'waiting' | 'blocked' }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; isCodex: boolean }
   | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  /**
+   * SubagentStart: a subagent was spawned by this session.
+   * id       : unique identifier for the subagent (agent_id or tool_use_id)
+   * agentType: type/name of the spawned agent (e.g. "code-reviewer")
+   * parentToolUseId: tool_use_id of the Task/Agent call that spawned this subagent
+   *
+   * Format observed from --include-hook-events:
+   *   Direct:  { type:"system", subtype:"subagent_start", agent_id, agent_type, parent_tool_use_id? }
+   *   Via hook: { type:"system", subtype:"hook_started", hook_event_name:"SubagentStart",
+   *               hook_event: { agent_id, agent_type, parent_tool_use_id? } }
+   */
+  | { type: 'subagent_start'; id: string; agentType: string; parentToolUseId?: string }
+  /**
+   * SubagentStop: a previously started subagent has finished.
+   */
+  | { type: 'subagent_stop'; id: string };
 
 // ---------------------------------------------------------------------------
 // Exported helper: codex detection
@@ -99,7 +115,7 @@ export class ClaudeSession extends EventEmitter {
   // Lifecycle
   // -------------------------------------------------------------------------
 
-  start(opts?: { resumeSessionId?: string }): void {
+  start(opts?: { resumeSessionId?: string; appendSystemPrompt?: string; settingsPath?: string }): void {
     const args = [
       '-p',
       '--output-format', 'stream-json',
@@ -111,6 +127,12 @@ export class ClaudeSession extends EventEmitter {
     ];
     if (opts?.resumeSessionId) {
       args.push('--resume', opts.resumeSessionId);
+    }
+    if (opts?.appendSystemPrompt) {
+      args.push('--append-system-prompt', opts.appendSystemPrompt);
+    }
+    if (opts?.settingsPath) {
+      args.push('--settings', opts.settingsPath);
     }
     const proc = execa(
       'claude',
@@ -279,10 +301,44 @@ export class ClaudeSession extends EventEmitter {
       return;
     }
 
-    // system::hook_started / hook_response — PreToolUse/PostToolUse hooks firing.
-    // These arrive while the session is actively processing; no status change needed
-    // (text_delta / system:status:requesting already set running). Silently consume.
-    if (evtType === 'system' && (data['subtype'] === 'hook_started' || data['subtype'] === 'hook_response')) {
+    // system::subagent_start / subagent_stop — direct subtype form (if claude CLI uses this format)
+    if (evtType === 'system' && data['subtype'] === 'subagent_start') {
+      const id = String(data['agent_id'] ?? data['tool_use_id'] ?? '');
+      const agentType = String(data['agent_type'] ?? 'agent');
+      const parentToolUseId = data['parent_tool_use_id'] ? String(data['parent_tool_use_id']) : undefined;
+      if (id) this._emitEvent({ type: 'subagent_start', id, agentType, parentToolUseId });
+      return;
+    }
+    if (evtType === 'system' && data['subtype'] === 'subagent_stop') {
+      const id = String(data['agent_id'] ?? data['tool_use_id'] ?? '');
+      if (id) this._emitEvent({ type: 'subagent_stop', id });
+      return;
+    }
+
+    // system::hook_started — PreToolUse/PostToolUse hooks firing, AND potentially
+    // SubagentStart/SubagentStop lifecycle events delivered as hook events.
+    // Check for subagent lifecycle before silently consuming.
+    if (evtType === 'system' && data['subtype'] === 'hook_started') {
+      const hookEventName = data['hook_event_name'] as string | undefined;
+      if (hookEventName === 'SubagentStart') {
+        const hookEvent = data['hook_event'] as Record<string, unknown> | undefined;
+        const id = String(hookEvent?.['agent_id'] ?? hookEvent?.['tool_use_id'] ?? `subagent-${Date.now()}`);
+        const agentType = String(hookEvent?.['agent_type'] ?? 'agent');
+        const parentToolUseId = hookEvent?.['parent_tool_use_id']
+          ? String(hookEvent['parent_tool_use_id'])
+          : undefined;
+        this._emitEvent({ type: 'subagent_start', id, agentType, parentToolUseId });
+      } else if (hookEventName === 'SubagentStop') {
+        const hookEvent = data['hook_event'] as Record<string, unknown> | undefined;
+        const id = String(hookEvent?.['agent_id'] ?? hookEvent?.['tool_use_id'] ?? '');
+        if (id) this._emitEvent({ type: 'subagent_stop', id });
+      }
+      // All hook_started events (incl. PreToolUse/PostToolUse): no status change needed.
+      return;
+    }
+
+    // system::hook_response — silently consume (status already set by other events).
+    if (evtType === 'system' && data['subtype'] === 'hook_response') {
       return;
     }
 

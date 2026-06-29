@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box } from 'ink';
 import { AgentSwitcher } from './AgentSwitcher.js';
+import { SubagentsPane } from './SubagentsPane.js';
 import { SystemPane } from './SystemPane.js';
 import { UsagePane } from './UsagePane.js';
 import { ReferencePane } from './ReferencePane.js';
@@ -22,6 +23,7 @@ export function Sidebar(): React.ReactElement {
   return (
     <Box width={34} flexDirection="column">
       <AgentSwitcher />
+      <SubagentsPane />
       <SystemPane />
       <UsagePane />
       <Box flexGrow={1} flexShrink={1} flexDirection="column" overflow="hidden">

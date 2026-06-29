@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { TitleBar } from './components/TitleBar.js';
 import { Sidebar } from './components/sidebar/Sidebar.js';
 import { MainColumn } from './components/MainColumn.js';
 import { CheatSheet } from './components/CheatSheet.js';
 import { ResumeDialog } from './components/ResumeDialog.js';
+import { PermissionDialog } from './components/PermissionDialog.js';
 import { useStore, makeAgent } from './store.js';
+import { PermissionServer } from './claude/permissionServer.js';
 import { useSystemStats } from './hooks/useSystemStats.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
 import { useAltScreen } from './hooks/useAltScreen.js';
@@ -19,6 +22,23 @@ import { fetchClaudeUsage } from './data/claudeUsage.js';
 import { fetchCodexUsage } from './data/codexUsage.js';
 import { enumerateSlashCommands } from './data/slashCommands.js';
 import { loadSessions, upsertSession } from './data/sessionStore.js';
+import { scanFilesSync } from './data/fileSearch.js';
+
+// ---------------------------------------------------------------------------
+// AGENTS.md loader — reads AGENTS.md from cwd if present.
+// CLAUDE.md is already auto-loaded by the claude CLI; AGENTS.md is not.
+// ---------------------------------------------------------------------------
+function loadAgentsMd(): string | undefined {
+  try {
+    const path = `${process.cwd()}/AGENTS.md`;
+    if (existsSync(path)) {
+      return readFileSync(path, 'utf-8');
+    }
+  } catch {
+    // ignore read errors
+  }
+  return undefined;
+}
 
 const LIVE_AGENT_ID = 'live';
 const REFERENCE_SECTIONS_RING = ['skills', 'mcp', 'codex'] as const;
@@ -37,6 +57,8 @@ export function App(): React.ReactElement {
   // Map of agentId → wireSession unsub for sessions spawned via Ctrl+N.
   // Used by closeCurrentSession to clean up listeners and flush timers.
   const sessionUnsubsRef = useRef<Map<string, () => void>>(new Map());
+  const permServerRef = useRef<PermissionServer>(new PermissionServer());
+  const settingsFileRef = useRef<string>('');
 
   // Store selectors
   const agents = useStore((state) => state.agents);
@@ -70,6 +92,8 @@ export function App(): React.ReactElement {
   const closeResumeDialog = useStore((state) => state.closeResumeDialog);
   const moveResumeSelection = useStore((state) => state.moveResumeSelection);
   const cycleAgentFilter = useStore((state) => state.cycleAgentFilter);
+  const openPermissionDialog = useStore((state) => state.openPermissionDialog);
+  const closePermissionDialog = useStore((state) => state.closePermissionDialog);
 
   useSystemStats();
   // Pass stopAll as cleanup so SIGTERM/SIGINT set stopped=true on all sessions
@@ -217,8 +241,38 @@ export function App(): React.ReactElement {
   useEffect(() => {
     const session = managerRef.current.create(LIVE_AGENT_ID);
     const unsub = wireSession(LIVE_AGENT_ID, session);
-    useStore.getState().registerSessionSend(LIVE_AGENT_ID, (text) => session.sendMessage(text));
-    session.start();
+    const store = useStore.getState();
+    store.registerSessionSend(LIVE_AGENT_ID, (text) => session.sendMessage(text));
+
+    // Inject AGENTS.md for the live session as well
+    const agentsMdContent = loadAgentsMd();
+    if (agentsMdContent) {
+      store.setAgentsMdLoaded(LIVE_AGENT_ID, true);
+    }
+
+    // Start permission server, then start session with settingsPath
+    permServerRef.current.start().then(() => {
+      const settingsPath = `/tmp/gary-terminal-perm-${process.pid}.json`;
+      settingsFileRef.current = settingsPath;
+      permServerRef.current.writeSettingsFile(settingsPath);
+      permServerRef.current.setOnRequest((req) => {
+        useStore.getState().openPermissionDialog(req.toolName, req.toolInput, req.toolUseId);
+      });
+      session.start({ appendSystemPrompt: agentsMdContent, settingsPath });
+    }).catch(() => {
+      // Permission server failed — session still works, just no TUI permission dialog
+      session.start({ appendSystemPrompt: agentsMdContent });
+    });
+
+    // Scan files for @ file picker (capped at 5000; non-blocking via setTimeout)
+    setTimeout(() => {
+      try {
+        const { files, truncated } = scanFilesSync(process.cwd());
+        useStore.getState().setFileList(files, truncated);
+      } catch {
+        // ignore scan errors (e.g. permission denied)
+      }
+    }, 0);
 
     // Fire initial monitoring scans
     refreshMonitoring(false);
@@ -226,20 +280,33 @@ export function App(): React.ReactElement {
     return () => {
       unsub();
       managerRef.current.stopAll();
+      permServerRef.current.stop();
+      // Clean up temp settings file
+      try { if (settingsFileRef.current) unlinkSync(settingsFileRef.current); } catch { /* ignore */ }
     };
   }, []); // [] — live session must be created exactly once, never re-spawned
 
   // -------------------------------------------------------------------------
   // Internal helper: create and wire a new session for an already-added agent.
+  // Reads AGENTS.md from cwd and injects it via --append-system-prompt if found.
   // -------------------------------------------------------------------------
   const _startSession = useCallback(
     (agentId: string, opts?: { resumeSessionId?: string }) => {
+      // Load AGENTS.md once per session start (sync read — fast, happens once)
+      const agentsMdContent = loadAgentsMd();
+
       const store = useStore.getState();
       const session = managerRef.current.create(agentId);
       const unsub = wireSession(agentId, session);
       sessionUnsubsRef.current.set(agentId, unsub);
       store.registerSessionSend(agentId, (text) => session.sendMessage(text));
-      session.start(opts);
+
+      // Track AGENTS.md status on the agent for UI display
+      if (agentsMdContent) {
+        store.setAgentsMdLoaded(agentId, true);
+      }
+
+      session.start({ ...opts, appendSystemPrompt: agentsMdContent, settingsPath: settingsFileRef.current });
     },
     [wireSession],
   );
@@ -301,6 +368,23 @@ export function App(): React.ReactElement {
     // 'base' = stack empty → normal select/active routing.
     const topMode = modeStack[modeStack.length - 1] ?? 'base';
 
+    // ── Overlay: permission dialog ─────────────────────────────────────────
+    if (topMode === 'permission') {
+      if (input === 'y') {
+        const { toolUseId } = useStore.getState().permissionDialog;
+        permServerRef.current.resolvePermission(toolUseId, 'allow');
+        closePermissionDialog();
+        return;
+      }
+      if (key.escape || input === 'n') {
+        const { toolUseId } = useStore.getState().permissionDialog;
+        permServerRef.current.resolvePermission(toolUseId, 'deny');
+        closePermissionDialog();
+        return;
+      }
+      return; // swallow all other keys
+    }
+
     // ── Overlay: resume dialog ─────────────────────────────────────────────
     // Stack top === 'resume': route to dialog actions, swallow everything else.
     if (topMode === 'resume') {
@@ -331,6 +415,12 @@ export function App(): React.ReactElement {
     // (↑↓ nav, Esc close, Tab apply, Enter via TextInput.onSubmit).
     // App.tsx yields entirely so there is no double-handling.
     if (topMode === 'slash') {
+      return;
+    }
+
+    // ── Overlay: file autocomplete ─────────────────────────────────────────
+    // Same pattern as slash — InputPane owns all keys while file popup is open.
+    if (topMode === 'file') {
       return;
     }
 
@@ -403,6 +493,14 @@ export function App(): React.ReactElement {
       }
     }
 
+    // ← / → : collapse / expand the cursored reference section (active mode)
+    if (focusRegion === 'reference' && (key.leftArrow || key.rightArrow)) {
+      const collapsed = useStore.getState().ui.referenceCollapsed[referenceCursor];
+      if (key.rightArrow && collapsed) toggleReference(referenceCursor);       // → expand
+      else if (key.leftArrow && !collapsed) toggleReference(referenceCursor);  // ← collapse
+      return;
+    }
+
     // Space: toggle reference section when reference panel is active
     if (input === ' ' && focusRegion === 'reference') {
       toggleReference(referenceCursor);
@@ -443,6 +541,7 @@ export function App(): React.ReactElement {
       </Box>
       <CheatSheet />
       <ResumeDialog />
+      <PermissionDialog />
     </Box>
   );
 }
