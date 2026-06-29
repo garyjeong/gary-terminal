@@ -21,7 +21,7 @@ import { KeybindingsPane } from './KeybindingsPane.js';
  */
 export function Sidebar(): React.ReactElement {
   return (
-    <Box width={34} flexDirection="column">
+    <Box width={38} flexDirection="column">
       <AgentSwitcher />
       <SubagentsPane />
       <SystemPane />

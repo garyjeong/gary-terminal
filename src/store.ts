@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Agent, AgentStatus, AgentUsage, Message, ToolCallState, SubagentInfo, BoundProcess, TopProc } from './types.js';
+import type { Agent, AgentStatus, AgentUsage, Message, ToolCallState, SubagentInfo, DetectedServer } from './types.js';
 import type { SkillInfo } from './data/skills.js';
 import type { McpInfo } from './data/mcp.js';
 import type { UsageHistory } from './data/usageHistory.js';
@@ -265,40 +265,10 @@ interface AppState {
   moveNewSessionRow: (delta: number) => void;
   cycleNewSessionOption: (delta: number) => void;
 
-  // ── Bound Processes (server process monitoring) ──────────────────────────
-  boundProcesses: BoundProcess[];
-
-  /** Dialog state for Ctrl+B process-bind overlay. */
-  bindDialog: {
-    open: boolean;
-    /** Current text query (port / PID / name). */
-    query: string;
-    /** Cursor position in the top-proc list. */
-    selectedIndex: number;
-    /** Top CPU processes fetched when dialog opens. */
-    topProcs: TopProc[];
-  };
-
-  addBoundProcess: (bp: BoundProcess) => void;
-  removeBoundProcess: (id: string) => void;
-  /**
-   * Update runtime stats for a single bound process entry.
-   * If pid changes (port re-resolved), update the stored pid too.
-   */
-  updateBoundProcessStats: (
-    id: string,
-    pid: number | null,
-    cpu: number,
-    mem: number,
-    memRssMB: number,
-    name: string,
-    alive: boolean,
-  ) => void;
-
-  openBindDialog: (topProcs: TopProc[]) => void;
-  closeBindDialog: () => void;
-  moveBindSelection: (delta: number) => void;
-  setBindQuery: (query: string) => void;
+  // ── Auto-detected repo servers ────────────────────────────────────────────
+  /** Servers auto-detected as running inside the current repo root (via lsof). */
+  detectedServers: DetectedServer[];
+  setDetectedServers: (servers: DetectedServer[]) => void;
 
   // ── Input history ────────────────────────────────────────────────────────
   /** Last 50 user-sent messages, oldest first, most recent last. */
@@ -438,14 +408,7 @@ export const useStore = create<AppState>()((set, get) => ({
     effortIdx: 0,
   },
 
-  boundProcesses: [],
-
-  bindDialog: {
-    open: false,
-    query: '',
-    selectedIndex: 0,
-    topProcs: [],
-  },
+  detectedServers: [],
 
   inputHistory: [],
   inputIsEmpty: true,
@@ -840,74 +803,10 @@ export const useStore = create<AppState>()((set, get) => ({
       },
     })),
 
-  // ── Bound Process actions ────────────────────────────────────────────────
+  // ── Auto-detected server actions ────────────────────────────────────────
 
-  addBoundProcess: (bp: BoundProcess) =>
-    set((state) => ({ boundProcesses: [...state.boundProcesses, bp] })),
-
-  removeBoundProcess: (id: string) =>
-    set((state) => ({
-      boundProcesses: state.boundProcesses.filter((bp) => bp.id !== id),
-    })),
-
-  updateBoundProcessStats: (id, pid, cpu, mem, memRssMB, name, alive) =>
-    set((state) => {
-      const HIST = 20;
-      return {
-        boundProcesses: state.boundProcesses.map((bp) => {
-          if (bp.id !== id) return bp;
-          const cpuHistory = bp.cpuHistory.length >= HIST
-            ? [...bp.cpuHistory.slice(-(HIST - 1)), cpu]
-            : [...bp.cpuHistory, cpu];
-          return { ...bp, pid, cpu, mem, memRssMB, name: name || bp.name, alive, cpuHistory };
-        }),
-      };
-    }),
-
-  // ── Bind dialog actions ──────────────────────────────────────────────────
-
-  openBindDialog: (topProcs: TopProc[]) =>
-    set((state) => {
-      const top = state.ui.modeStack[state.ui.modeStack.length - 1];
-      const newStack: KeyMode[] = top === 'bind'
-        ? state.ui.modeStack
-        : [...state.ui.modeStack, 'bind'];
-      return {
-        bindDialog: { open: true, query: '', selectedIndex: 0, topProcs },
-        ui: { ...state.ui, modeStack: newStack },
-      };
-    }),
-
-  closeBindDialog: () =>
-    set((state) => {
-      const top = state.ui.modeStack[state.ui.modeStack.length - 1];
-      const newStack: KeyMode[] = top === 'bind'
-        ? state.ui.modeStack.slice(0, -1)
-        : state.ui.modeStack;
-      return {
-        bindDialog: { ...state.bindDialog, open: false, query: '', selectedIndex: 0 },
-        ui: { ...state.ui, modeStack: newStack },
-      };
-    }),
-
-  moveBindSelection: (delta: number) =>
-    set((state) => {
-      const { selectedIndex, query, topProcs } = state.bindDialog;
-      const filtered = topProcs.filter((p) =>
-        query === '' ||
-        p.name.toLowerCase().includes(query.toLowerCase()) ||
-        String(p.pid).includes(query),
-      );
-      const len = filtered.length;
-      if (len === 0) return state;
-      const next = ((selectedIndex + delta) % len + len) % len;
-      return { bindDialog: { ...state.bindDialog, selectedIndex: next } };
-    }),
-
-  setBindQuery: (query: string) =>
-    set((state) => ({
-      bindDialog: { ...state.bindDialog, query, selectedIndex: 0 },
-    })),
+  setDetectedServers: (servers: DetectedServer[]) =>
+    set({ detectedServers: servers }),
 
   // ── Multi-session management ─────────────────────────────────────────────
 

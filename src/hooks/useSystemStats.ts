@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as si from 'systeminformation';
 import { useStore } from '../store.js';
+import type { DetectedServer } from '../types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -22,6 +23,83 @@ async function portToPid(port: number): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Get a map of PID → listening TCP ports via `lsof -nP -iTCP -sTCP:LISTEN -F pn`.
+ * Returns empty map on any error.
+ */
+export async function getListeningPidPorts(): Promise<Map<number, number[]>> {
+  const pidPorts = new Map<number, number[]>();
+  try {
+    const { stdout } = await execFileAsync('lsof', [
+      '-nP', '-iTCP', '-sTCP:LISTEN', '-F', 'pn',
+    ]);
+    let currentPid: number | null = null;
+    for (const line of stdout.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed[0] === 'p') {
+        const parsed = parseInt(trimmed.slice(1), 10);
+        currentPid = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+      } else if (trimmed[0] === 'n' && currentPid !== null) {
+        // e.g. "*:3000", "127.0.0.1:3000", "[::]:8080"
+        const portMatch = trimmed.match(/:(\d+)$/);
+        if (portMatch) {
+          const port = parseInt(portMatch[1]!, 10);
+          if (!pidPorts.has(currentPid)) pidPorts.set(currentPid, []);
+          pidPorts.get(currentPid)!.push(port);
+        }
+      }
+      // 'f' lines (file descriptor separators) are silently ignored
+    }
+  } catch {
+    // lsof unavailable or permission denied
+  }
+  return pidPorts;
+}
+
+/**
+ * Get the cwd of a process via `lsof -a -p <pid> -d cwd -Fn`.
+ * Returns null on any error (process not found, permission denied, etc.).
+ */
+export async function getPidCwd(pid: number): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('lsof', [
+      '-a', '-p', String(pid), '-d', 'cwd', '-Fn',
+    ]);
+    const nLine = stdout.split('\n').find((l) => l.trim().startsWith('n'));
+    if (!nLine) return null;
+    const path = nLine.trim().slice(1);
+    return path || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detect servers running inside the repo root (repoRoot) and return their info.
+ * Excludes the process identified by ownPid.
+ */
+export async function detectRepoServers(
+  repoRoot: string,
+  ownPid: number,
+): Promise<Array<{ pid: number; ports: number[] }>> {
+  const pidPortMap = await getListeningPidPorts();
+  const candidates = [...pidPortMap.entries()].filter(([pid]) => pid !== ownPid);
+  if (candidates.length === 0) return [];
+
+  // Check cwds in parallel — processes may die between steps, handled gracefully
+  const cwdResults = await Promise.all(
+    candidates.map(async ([pid, ports]) => {
+      const cwd = await getPidCwd(pid);
+      return { pid, ports, cwd };
+    }),
+  );
+
+  return cwdResults
+    .filter(({ cwd }) => cwd !== null && cwd.startsWith(repoRoot))
+    .map(({ pid, ports }) => ({ pid, ports }));
 }
 
 export function useSystemStats(): void {
@@ -60,43 +138,54 @@ export function useSystemStats(): void {
 
         updateSystemStats(cpu, memPercent, net, disk, memTotalGB);
 
-        // ── Bound process stats update ────────────────────────────────────
-        const boundProcesses = useStore.getState().boundProcesses;
-        if (boundProcesses.length > 0) {
-          // Only call si.processes() when there are bound processes to check.
-          const procsData = await si.processes();
+        // ── Auto-detect repo servers ──────────────────────────────────────
+        const repoRoot = process.cwd();
+        const ownPid = process.pid;
+        const prevDetected = useStore.getState().detectedServers;
+
+        try {
+          const repoEntries = await detectRepoServers(repoRoot, ownPid);
           if (!active) return;
 
-          const procMap = new Map(procsData.list.map((p) => [p.pid, p]));
-          const store = useStore.getState();
+          if (repoEntries.length > 0) {
+            // Get process stats for the detected servers
+            const procsData = await si.processes();
+            if (!active) return;
+            const procMap = new Map(procsData.list.map((p) => [p.pid, p]));
 
-          for (const bp of boundProcesses) {
-            let resolvedPid = bp.pid;
+            const existingMap = new Map(prevDetected.map((s) => [s.pid, s]));
+            const HIST = 20;
 
-            // Re-resolve port→PID if dead or never resolved
-            if (bp.bindType === 'port' && (resolvedPid === null || !bp.alive)) {
-              resolvedPid = await portToPid(parseInt(bp.bindValue, 10));
-            }
+            const newServers: DetectedServer[] = repoEntries.map(({ pid, ports }) => {
+              const proc = procMap.get(pid);
+              const cpu = proc ? Math.round(proc.cpu * 10) / 10 : 0;
+              const mem = proc ? Math.round(proc.mem * 10) / 10 : 0;
+              const memRssMB = proc ? ((proc.memRss ?? 0) as number) / (1024 * 1024) : 0;
+              const name = proc?.name ?? `pid:${pid}`;
+              const prev = existingMap.get(pid);
+              const cpuHistory = prev
+                ? (prev.cpuHistory.length >= HIST
+                  ? [...prev.cpuHistory.slice(-(HIST - 1)), cpu]
+                  : [...prev.cpuHistory, cpu])
+                : [cpu];
+              return {
+                pid,
+                name,
+                port: ports[0] ?? 0,
+                cpu,
+                mem,
+                memRssMB,
+                cpuHistory,
+              };
+            });
 
-            if (resolvedPid !== null) {
-              const proc = procMap.get(resolvedPid);
-              if (proc) {
-                store.updateBoundProcessStats(
-                  bp.id,
-                  resolvedPid,
-                  Math.round(proc.cpu * 10) / 10,
-                  Math.round(proc.mem * 10) / 10,
-                  (proc.memRss ?? 0) / (1024 * 1024),
-                  proc.name,
-                  true,
-                );
-              } else {
-                store.updateBoundProcessStats(bp.id, resolvedPid, 0, 0, 0, bp.name, false);
-              }
-            } else {
-              store.updateBoundProcessStats(bp.id, null, 0, 0, 0, bp.name, false);
-            }
+            useStore.getState().setDetectedServers(newServers);
+          } else if (prevDetected.length > 0) {
+            // Servers have stopped — clear the list
+            useStore.getState().setDetectedServers([]);
           }
+        } catch {
+          // ignore server detection errors
         }
       } catch {
         // ignore polling errors
