@@ -7,11 +7,11 @@ import type { Message, MessageRole } from '../types.js';
 import { MarkdownText } from '../utils/renderMarkdown.js';
 
 // ─── Layout constants ──────────────────────────────────────────────────────
-const TITLEBAR_H = 3;
+// (Top title bar removed — no TITLEBAR_H.)
 const CONV_BORDERS_H = 2;
 const CONV_HEADER_H = 1;
 const INPUT_H = 3;
-const LAYOUT_OVERHEAD = TITLEBAR_H + CONV_BORDERS_H + CONV_HEADER_H + INPUT_H; // = 9
+const LAYOUT_OVERHEAD = CONV_BORDERS_H + CONV_HEADER_H + INPUT_H; // = 6
 
 const SIDEBAR_W = 34;
 const CONV_BORDER_COLS = 2;

@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
-import { TitleBar } from './components/TitleBar.js';
 import { Sidebar } from './components/sidebar/Sidebar.js';
 import { MainColumn } from './components/MainColumn.js';
 import { CheatSheet } from './components/CheatSheet.js';
@@ -662,7 +661,6 @@ export function App(): React.ReactElement {
 
   return (
     <Box flexDirection="column" width={columns} height={rows}>
-      <TitleBar />
       <Box flexDirection="row" flexGrow={1}>
         <Sidebar />
         <MainColumn />
