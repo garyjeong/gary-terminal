@@ -109,7 +109,7 @@ export function AgentSwitcher(): React.ReactElement {
       paddingX={1}
     >
       <Box flexDirection="row" justifyContent="space-between">
-        <Text bold color={isFocused ? 'cyan' : 'white'}>
+        <Text bold color="cyan">
           에이전트
         </Text>
         {agentFilter !== 'all' && (

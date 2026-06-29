@@ -31,7 +31,7 @@ export function KeybindingsPane(): React.ReactElement {
       overflow="hidden"
       paddingX={1}
     >
-      <Text bold color="white">
+      <Text bold color="gray">
         {collapsed ? '▸' : '▾'} 단축키
         {collapsed && <Text color="gray" dimColor> (^K 열기)</Text>}
       </Text>

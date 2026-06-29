@@ -39,7 +39,7 @@ export function UsagePane(): React.ReactElement {
       overflow="hidden"
       paddingX={1}
     >
-      <Text bold color={isFocused ? 'cyan' : 'white'}>사용량</Text>
+      <Text bold color="yellow">사용량</Text>
 
       {/* ── Claude 섹션 ─────────────────────────────────────────────────── */}
       <Text bold color="cyan">─ Claude</Text>

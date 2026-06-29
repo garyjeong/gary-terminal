@@ -173,7 +173,7 @@ export function SystemPane(): React.ReactElement {
       overflow="hidden"
       paddingX={1}
     >
-      <Text bold color="white">시스템</Text>
+      <Text bold color="green">시스템</Text>
 
       {/* ── CPU: header + 3-row tall graph ─────────────────────────────────── */}
       <Box flexDirection="row">
@@ -228,7 +228,7 @@ export function SystemPane(): React.ReactElement {
       {detectedServers.length > 0 && (
         <>
           <Text color="gray" dimColor>{'─'.repeat(GRAPH_WIDTH)}</Text>
-          <Text bold color="white">{'서버'}</Text>
+          <Text bold color="magenta">{'서버'}</Text>
           {detectedServers.map((srv) => {
             const srvColor = pctColor(srv.cpu);
             const miniGraph = renderBlock(srv.cpuHistory, 5, 100);

@@ -15,7 +15,7 @@ export function ReferencePane(): React.ReactElement {
   const borderColor = !isSelected ? 'gray' : isActive ? 'cyan' : 'yellow';
 
   function sectionColor(section: 'skills' | 'mcp' | 'codex'): string {
-    if (!isFocused) return 'gray';
+    if (!isFocused) return 'blue';
     if (referenceCursor === section) return 'cyan';
     return 'yellow';
   }
@@ -63,7 +63,7 @@ export function ReferencePane(): React.ReactElement {
       overflow="hidden"
       paddingX={1}
     >
-      <Text bold color={isFocused ? 'cyan' : 'white'}>
+      <Text bold color={isFocused ? 'cyan' : 'blue'}>
         참조
       </Text>
       {isSelected && (
@@ -81,7 +81,7 @@ export function ReferencePane(): React.ReactElement {
           </Text>
           <Text
             bold
-            color={isSectionFocused('skills') ? 'cyan' : 'white'}
+            color={isSectionFocused('skills') ? 'cyan' : 'blue'}
           >
             {' '}Skills
           </Text>
@@ -107,7 +107,7 @@ export function ReferencePane(): React.ReactElement {
           </Text>
           <Text
             bold
-            color={isSectionFocused('mcp') ? 'cyan' : 'white'}
+            color={isSectionFocused('mcp') ? 'cyan' : 'blue'}
           >
             {' '}MCP
           </Text>
@@ -142,7 +142,7 @@ export function ReferencePane(): React.ReactElement {
           </Text>
           <Text
             bold
-            color={isSectionFocused('codex') ? 'cyan' : 'white'}
+            color={isSectionFocused('codex') ? 'cyan' : 'blue'}
           >
             {' '}Codex
           </Text>
