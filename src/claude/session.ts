@@ -66,7 +66,9 @@ export type SessionEvent =
   /**
    * SubagentStop: a previously started subagent has finished.
    */
-  | { type: 'subagent_stop'; id: string };
+  | { type: 'subagent_stop'; id: string }
+  /** Emitted when the claude process exits unexpectedly (not via stop()). */
+  | { type: 'exited'; code?: number };
 
 // ---------------------------------------------------------------------------
 // Exported helper: codex detection
@@ -187,25 +189,33 @@ export class ClaudeSession extends EventEmitter {
     const rl = createInterface({ input: stdout as NodeJS.ReadableStream });
     rl.on('line', (line: string) => this.handleLine(line));
 
-    // Handle process errors.
-    // Suppress errors when:
-    //   (a) we called stop() ourselves — stopped flag is already true, OR
-    //   (b) the child exited with SIGTERM / exit code 143 — these are
-    //       intentional terminations (e.g. OS/parent sending SIGTERM) and
-    //       should never surface as "[오류]" in the conversation UI.
-    void proc.catch((err: unknown) => {
-      if (this.stopped) return;
-      const anyErr = err as { exitCode?: number; signal?: string };
-      if (
-        anyErr.exitCode === 143 ||
-        anyErr.signal === 'SIGTERM' ||
-        anyErr.signal === 'SIGKILL' ||
-        anyErr.signal === 'SIGINT'
-      ) {
-        return;
-      }
-      this._emitEvent({ type: 'error', message: (err as Error).message });
-    });
+    // Handle process exit — both normal (code 0) and abnormal (error/signal).
+    // On normal exit without stop(): emit 'exited' so the store marks the agent done.
+    // On signal/expected termination: suppress silently.
+    // On unexpected error exit: emit error then exited.
+    void proc.then(
+      () => {
+        // Resolved = exit code 0 (clean exit we didn't trigger)
+        if (!this.stopped) {
+          this._handleProcessExit(0);
+        }
+      },
+      (err: unknown) => {
+        if (this.stopped) return;
+        const anyErr = err as { exitCode?: number; signal?: string };
+        if (
+          anyErr.exitCode === 143 ||
+          anyErr.signal === 'SIGTERM' ||
+          anyErr.signal === 'SIGKILL' ||
+          anyErr.signal === 'SIGINT'
+        ) {
+          return; // Expected/intentional termination — suppress
+        }
+        // Unexpected error: show message, then mark exited
+        this._emitEvent({ type: 'error', message: (err as Error).message });
+        this._handleProcessExit(anyErr.exitCode);
+      },
+    );
   }
 
   stop(): void {
@@ -230,7 +240,7 @@ export class ClaudeSession extends EventEmitter {
   }
 
   sendMessage(text: string): void {
-    if (!this.procStdin) return;
+    if (this.stopped || !this.procStdin) return;
     const payload = JSON.stringify({
       type: 'user',
       message: {
@@ -276,6 +286,18 @@ export class ClaudeSession extends EventEmitter {
 
   private _emitEvent(evt: SessionEvent): void {
     this.emit('event', evt);
+  }
+
+  /**
+   * Called when the child process exits (cleanly or with an unexpected code).
+   * Nulls out the I/O handles so further sendMessage/interrupt calls are no-ops,
+   * then emits 'exited' so the store can mark the agent as done.
+   */
+  private _handleProcessExit(code: number | undefined): void {
+    this.procStdin = null;
+    this.procKill = null;
+    this._interruptFn = null;
+    this._emitEvent({ type: 'exited', code });
   }
 
   /** Fallback context window by model name when modelUsage is absent */

@@ -33,11 +33,20 @@ export function InputPane(): React.ReactElement {
   const moveFileSelection = useStore((state) => state.moveFileSelection);
 
   const focusMode = useStore((state) => state.ui.focusMode);
+  const modeStack = useStore((state) => state.ui.modeStack);
   const setFocusMode = useStore((state) => state.setFocusMode);
   const isSelected = focusRegion === 'input';
   const isActive = isSelected && focusMode === 'active';
   const isFocused = isActive;
   const borderColor = !isSelected ? 'gray' : isActive ? 'cyan' : 'yellow';
+
+  // Blocking overlays disable the TextInput entirely so keystrokes don't leak through.
+  // slash/file popups are intentionally NOT blocking — the user must continue typing.
+  const BLOCKING_MODES = ['resume', 'permission', 'newsession', 'cheatsheet', 'copy'] as const;
+  const hasBlockingOverlay = modeStack.some((m) =>
+    (BLOCKING_MODES as readonly string[]).includes(m),
+  );
+  const textInputDisabled = !isActive || hasBlockingOverlay;
 
   // Input history actions
   const addInputHistory = useStore((state) => state.addInputHistory);
@@ -349,6 +358,7 @@ export function InputPane(): React.ReactElement {
             onChange={handleChange}
             onSubmit={handleSubmit}
             placeholder="메시지를 입력하세요..."
+            isDisabled={textInputDisabled}
           />
         </Box>
       </Box>

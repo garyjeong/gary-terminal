@@ -408,7 +408,7 @@ export function App(): React.ReactElement {
       sessionCountRef.current++;
       const agentId = `session-${sessionCountRef.current}`;
       const title = `↩ ${resumedTitle}`;
-      const newAgent: Agent = makeAgent(agentId, title);
+      const newAgent: Agent = makeAgent(agentId, title, { isResume: true });
 
       const store = useStore.getState();
       store.addAgent(newAgent);
@@ -532,8 +532,17 @@ export function App(): React.ReactElement {
 
     // ── Base mode (no overlay) ─────────────────────────────────────────────
 
-    // Global shortcuts — active in both select and active mode
-    if (input === 'q' || (key.ctrl && input === 'c')) {
+    // Global shortcuts — active in both select and active mode.
+    // Ctrl+C always quits regardless of focus.
+    if (key.ctrl && input === 'c') {
+      managerRef.current.stopAll();
+      exit();
+      return;
+    }
+    // q and ? are single-char shortcuts that collide with typing —
+    // suppress them when the input pane is active so users can type freely.
+    const inputIsActive = focusRegion === 'input' && focusMode === 'active';
+    if (input === 'q' && !inputIsActive) {
       managerRef.current.stopAll();
       exit();
       return;
@@ -553,7 +562,7 @@ export function App(): React.ReactElement {
       }
       return;
     }
-    if (input === '?') { toggleCheatSheet(); return; }
+    if (input === '?' && !inputIsActive) { toggleCheatSheet(); return; }
 
     // ── SELECT mode: navigate between panels ──────────────────────────────
     if (focusMode === 'select') {

@@ -281,7 +281,7 @@ interface AppState {
 // Initial state helpers
 // ---------------------------------------------------------------------------
 
-function makeAgent(id: string, title: string, opts?: { requestedModel?: string; effort?: string }): Agent {
+function makeAgent(id: string, title: string, opts?: { requestedModel?: string; effort?: string; isResume?: boolean }): Agent {
   return {
     id,
     title,
@@ -298,6 +298,7 @@ function makeAgent(id: string, title: string, opts?: { requestedModel?: string; 
     agentsMdLoaded: false,
     requestedModel: opts?.requestedModel,
     effort: opts?.effort,
+    isResume: opts?.isResume ?? false,
   };
 }
 
@@ -440,11 +441,15 @@ export const useStore = create<AppState>()((set, get) => ({
       case 'message_complete':
         set((state) => {
           const agent = state.agents.find((a) => a.id === agentId);
-          if (!agent?.streamingText) return state;
+          // Fallback: if no streaming buffer was accumulated, use evt.text directly.
+          // This handles cases where the result event carries the final text but
+          // no incremental text_delta events were emitted (e.g. very short responses).
+          const content = agent?.streamingText || evt.text;
+          if (!content) return state;
           const newMessage: Message = {
             id: `msg-${Date.now()}`,
             role: 'assistant',
-            content: agent.streamingText,
+            content,
           };
           return {
             agents: state.agents.map((a) =>
@@ -610,7 +615,31 @@ export const useStore = create<AppState>()((set, get) => ({
         break;
 
       case 'user_replay':
-        // skip — user message already added on submit
+        // Live sessions: user message already added on submit — skip to avoid duplicates.
+        // Resume sessions: replay past user messages into the conversation history.
+        set((state) => {
+          const agent = state.agents.find((a) => a.id === agentId);
+          if (!agent?.isResume) return state;
+          return {
+            agents: state.agents.map((a) =>
+              a.id === agentId
+                ? {
+                    ...a,
+                    messages: [
+                      ...a.messages,
+                      {
+                        id: `replay-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                        role: 'user' as const,
+                        content: evt.content,
+                      },
+                    ],
+                  }
+                : a,
+            ),
+            conversationScrollOffset:
+              agentId === state.focusedAgentId ? 0 : state.conversationScrollOffset,
+          };
+        });
         break;
 
       case 'error':
@@ -632,6 +661,19 @@ export const useStore = create<AppState>()((set, get) => ({
           ),
           conversationScrollOffset:
             agentId === state.focusedAgentId ? 0 : state.conversationScrollOffset,
+        }));
+        break;
+
+      case 'exited':
+        // Claude process exited unexpectedly — mark agent done and stop waiting.
+        set((state) => ({
+          agents: state.agents.map((a) =>
+            a.id === agentId ? { ...a, status: 'done' as const } : a,
+          ),
+          ui:
+            state.focusedAgentId === agentId
+              ? { ...state.ui, waiting: false }
+              : state.ui,
         }));
         break;
     }
@@ -793,6 +835,31 @@ export const useStore = create<AppState>()((set, get) => ({
     const state = get();
     switch (op.type) {
       case 'submit': {
+        // Guard: block submit while the agent is already processing.
+        // Show a one-line notice so the user knows their message was dropped.
+        const currentAgent = state.agents.find((a) => a.id === agentId);
+        if (currentAgent?.status === 'running') {
+          set((s) => ({
+            agents: s.agents.map((a) =>
+              a.id === agentId
+                ? {
+                    ...a,
+                    messages: [
+                      ...a.messages,
+                      {
+                        id: `sys-${Date.now()}`,
+                        role: 'assistant' as const,
+                        content: '[응답 처리 중 — 완료 후 전송하거나 Ctrl+X로 중단하세요]',
+                      },
+                    ],
+                  }
+                : a,
+            ),
+            conversationScrollOffset:
+              agentId === s.focusedAgentId ? 0 : s.conversationScrollOffset,
+          }));
+          break;
+        }
         const send = state.sessionSends[agentId];
         if (!send) break;
         set((s) => ({

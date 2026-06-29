@@ -64,4 +64,10 @@ export interface Agent {
   requestedModel?: string;
   /** Requested effort at spawn time (passed to --effort flag; undefined = not set) */
   effort?: string;
+  /**
+   * True when this agent was created by resuming a previous claude session.
+   * Resume agents replay user_replay events (past user messages) into their
+   * message list; live agents skip them to avoid duplicating just-submitted text.
+   */
+  isResume: boolean;
 }

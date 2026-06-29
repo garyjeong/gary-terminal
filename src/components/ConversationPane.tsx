@@ -3,7 +3,7 @@ import { Box, Text } from 'ink';
 import { useStore } from '../store.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { useSpinner } from '../hooks/useSpinner.js';
-import type { Message } from '../types.js';
+import type { Message, MessageRole } from '../types.js';
 import { MarkdownText } from '../utils/renderMarkdown.js';
 
 // ─── Layout constants ──────────────────────────────────────────────────────
@@ -17,67 +17,112 @@ const SIDEBAR_W = 34;
 const CONV_BORDER_COLS = 2;
 const CONV_PADDING_COLS = 2;
 
-// ─── Message rendering ─────────────────────────────────────────────────────
+// ─── Flat row type for line-level windowing ────────────────────────────────
 
-const MessageRow = React.memo(function MessageRow({ message }: { message: Message }): React.ReactElement {
-  switch (message.role) {
+interface FlatRow {
+  key: string;
+  msgId: string;
+  role: MessageRole;
+  lineText: string;
+  /** True for the first line of a message — controls role prefix display. */
+  isFirstLine: boolean;
+  toolName?: string;
+  toolStatus?: 'ok' | 'error' | 'running';
+}
+
+/** Split a single message into flat display rows (one row per content line). */
+function messageToRows(msg: Message): FlatRow[] {
+  const lines = msg.content ? msg.content.split('\n') : [''];
+  return lines.map((lineText, i) => ({
+    key: `${msg.id}-ln${i}`,
+    msgId: msg.id,
+    role: msg.role,
+    lineText,
+    isFirstLine: i === 0,
+    toolName: msg.toolName,
+    toolStatus: msg.toolStatus,
+  }));
+}
+
+// ─── Single flat-row renderer ──────────────────────────────────────────────
+
+const FlatRowView = React.memo(function FlatRowView({
+  row,
+}: {
+  row: FlatRow;
+}): React.ReactElement {
+  switch (row.role) {
     case 'user':
       return (
         <Box flexDirection="row">
-          <Text color="cyan">[you] </Text>
-          <Text color="white" wrap="wrap">{message.content}</Text>
+          {row.isFirstLine ? (
+            <Text color="cyan">[you] </Text>
+          ) : (
+            <Text>{'      '}</Text>
+          )}
+          <Text color="white" wrap="wrap">
+            {row.lineText}
+          </Text>
         </Box>
       );
 
     case 'assistant':
+      // Pass individual lines through MarkdownText — handles headings, bullets,
+      // inline bold/code/italic. Multi-line fenced code blocks are split across rows
+      // (each line renders as plain text), which is an acceptable trade-off for
+      // gaining full row-level scroll control.
       return (
         <Box flexDirection="column">
-          <MarkdownText content={message.content} />
+          <MarkdownText content={row.lineText} />
         </Box>
       );
 
     case 'tool': {
       const statusSymbol =
-        message.toolStatus === 'ok'
-          ? '✓'
-          : message.toolStatus === 'error'
-          ? '✗'
-          : '●';
+        row.toolStatus === 'ok' ? '✓' : row.toolStatus === 'error' ? '✗' : '●';
       const statusColor =
-        message.toolStatus === 'ok'
-          ? 'green'
-          : message.toolStatus === 'error'
-          ? 'red'
-          : 'yellow';
+        row.toolStatus === 'ok' ? 'green' : row.toolStatus === 'error' ? 'red' : 'yellow';
+      if (row.isFirstLine) {
+        return (
+          <Box flexDirection="row">
+            <Text color="yellow">● </Text>
+            <Text color="gray">
+              {row.toolName ?? 'Tool'}: {row.lineText}{' '}
+            </Text>
+            <Text color={statusColor}>{statusSymbol}</Text>
+          </Box>
+        );
+      }
       return (
         <Box flexDirection="row">
-          <Text color="yellow">● </Text>
-          <Text color="gray">
-            {message.toolName ?? 'Tool'}: {message.content}{' '}
-          </Text>
-          <Text color={statusColor}>{statusSymbol}</Text>
+          <Text>{'  '}</Text>
+          <Text color="gray">{row.lineText}</Text>
         </Box>
       );
     }
 
     case 'codex': {
       const statusSymbol =
-        message.toolStatus === 'ok'
-          ? '✓'
-          : message.toolStatus === 'error'
-          ? '✗'
-          : '●';
+        row.toolStatus === 'ok' ? '✓' : row.toolStatus === 'error' ? '✗' : '●';
       const statusColor =
-        message.toolStatus === 'ok'
+        row.toolStatus === 'ok'
           ? 'green'
-          : message.toolStatus === 'error'
+          : row.toolStatus === 'error'
           ? 'red'
           : 'magenta';
+      if (row.isFirstLine) {
+        return (
+          <Box flexDirection="row">
+            <Text color="magenta">▸ codex: </Text>
+            <Text color="gray">{row.lineText} </Text>
+            <Text color={statusColor}>{statusSymbol}</Text>
+          </Box>
+        );
+      }
       return (
         <Box flexDirection="row">
-          <Text color="magenta">▸ codex: </Text>
-          <Text color="gray">{message.content} </Text>
-          <Text color={statusColor}>{statusSymbol}</Text>
+          <Text>{'  '}</Text>
+          <Text color="gray">{row.lineText}</Text>
         </Box>
       );
     }
@@ -101,29 +146,58 @@ export function ConversationPane(): React.ReactElement {
 
   const focusedAgent = agents.find((a) => a.id === focusedAgentId);
   const messages = focusedAgent?.messages ?? [];
-  // Per-agent streaming text
   const streamingText = focusedAgent?.streamingText ?? '';
 
-  // Show thinking spinner: agent is running but no streaming text yet (first-token wait).
-  // Spinner is suppressed in copy-mode to freeze periodic re-renders.
+  // Show thinking spinner: agent running but no streaming text yet (first-token wait).
+  // Suppressed in copy-mode to freeze periodic re-renders.
   const isThinking =
     focusedAgent?.status === 'running' && streamingText === '' && scrollOffset === 0;
   const spinnerFrame = useSpinner(isThinking && !copyMode);
 
-  // ② Determine which messages to render.
-  const displayMessages =
-    scrollOffset > 0
-      ? messages.slice(0, Math.max(1, messages.length - scrollOffset))
-      : messages;
-
   const showStreaming = scrollOffset === 0 && Boolean(streamingText);
 
   const messagesHeight = Math.max(4, rows - LAYOUT_OVERHEAD);
-  const _contentWidth = Math.max(20, columns - SIDEBAR_W - CONV_BORDER_COLS - CONV_PADDING_COLS);
-  void _contentWidth;
+  void columns; // used only for _contentWidth (unused by row-based logic)
+
+  // ── Build flat row list from all committed messages ────────────────────────
+  const allRows: FlatRow[] = [];
+  for (const msg of messages) {
+    for (const row of messageToRows(msg)) {
+      allRows.push(row);
+    }
+  }
+
+  // ── Compute how many tail rows (streaming + thinking) will occupy ──────────
+  // These are always shown at the bottom and count against available height.
+  const streamLineCount = showStreaming
+    ? Math.max(1, streamingText.split('\n').length)
+    : 0;
+  const thinkingLineCount = isThinking ? 1 : 0;
+  const tailHeight = streamLineCount + thinkingLineCount;
+
+  // Available height for committed message rows
+  const availableForRows = Math.max(0, messagesHeight - tailHeight);
+
+  // ── Row-based windowing ────────────────────────────────────────────────────
+  const totalMsgRows = allRows.length;
+  // Clamp offset so we never scroll past the very first row
+  const maxOffset = Math.max(0, totalMsgRows - availableForRows);
+  const rowOffset = Math.min(scrollOffset, maxOffset);
+
+  // Window: take the last `availableForRows` rows, shifted up by rowOffset
+  const viewEnd = totalMsgRows - rowOffset;
+  const viewStart = Math.max(0, viewEnd - availableForRows);
+  const visibleRows = allRows.slice(viewStart, viewEnd);
+
+  const isEmpty = visibleRows.length === 0 && !showStreaming && !isThinking;
 
   const scrollIndicator =
-    scrollOffset > 0 ? ` [↑ ${scrollOffset} msgs up | PgDn/Ctrl+D to tail]` : '';
+    rowOffset > 0
+      ? ` [↑ ${rowOffset} rows up | PgDn/Ctrl+D to tail]`
+      : '';
+
+  // Streaming lines split for rendering
+  const streamLines = showStreaming ? streamingText.split('\n') : [];
 
   return (
     <Box
@@ -145,43 +219,62 @@ export function ConversationPane(): React.ReactElement {
           {'"'}
         </Text>
         {focusedAgent?.agentsMdLoaded && (
-          <Text color="green" dimColor> AGENTS.md ✓</Text>
+          <Text color="green" dimColor>
+            {' AGENTS.md ✓'}
+          </Text>
         )}
-        {scrollOffset > 0 && (
-          <Text color="yellow" dimColor>{scrollIndicator}</Text>
+        {rowOffset > 0 && (
+          <Text color="yellow" dimColor>
+            {scrollIndicator}
+          </Text>
         )}
       </Box>
 
       {/*
-       * Messages box: fixed height + flex-end packs to bottom,
-       * overflow="hidden" clips upward overflow.
-       * When empty, center a hint message instead.
+       * Messages box: fixed height, no overflow clipping needed since
+       * we pre-slice to exactly the available row count.
        */}
       <Box
         flexDirection="column"
         height={messagesHeight}
-        justifyContent={displayMessages.length === 0 && !showStreaming && !isThinking ? 'center' : 'flex-end'}
         overflow="hidden"
       >
-        {displayMessages.length === 0 && !showStreaming && !isThinking ? (
-          <Box alignItems="center">
-            <Text color="gray" dimColor>아직 대화가 없습니다 · 메시지를 입력해 시작하세요</Text>
+        {isEmpty ? (
+          <Box alignItems="center" justifyContent="center" height={messagesHeight}>
+            <Text color="gray" dimColor>
+              아직 대화가 없습니다 · 메시지를 입력해 시작하세요
+            </Text>
           </Box>
         ) : (
           <>
-            {displayMessages.map((msg) => (
-              <MessageRow key={msg.id} message={msg} />
+            {visibleRows.map((row) => (
+              <FlatRowView key={row.key} row={row} />
             ))}
-            {showStreaming && (
-              <Box flexDirection="row">
-                <Text color="cyan" dimColor>▍ </Text>
-                <Text color="white" wrap="wrap">{streamingText}</Text>
-              </Box>
-            )}
+            {/* Streaming text — always at tail */}
+            {showStreaming &&
+              streamLines.map((line, i) => (
+                <Box key={`stream-${i}`} flexDirection="row">
+                  {i === 0 ? (
+                    <Text color="cyan" dimColor>
+                      {'▍ '}
+                    </Text>
+                  ) : (
+                    <Text>{'  '}</Text>
+                  )}
+                  <Text color="white" wrap="wrap">
+                    {line}
+                  </Text>
+                </Box>
+              ))}
+            {/* Thinking spinner — shown while waiting for first token */}
             {isThinking && (
               <Box flexDirection="row">
-                <Text color="cyan" dimColor>{spinnerFrame} </Text>
-                <Text color="gray" dimColor>생각 중…</Text>
+                <Text color="cyan" dimColor>
+                  {spinnerFrame}{' '}
+                </Text>
+                <Text color="gray" dimColor>
+                  생각 중…
+                </Text>
               </Box>
             )}
           </>
