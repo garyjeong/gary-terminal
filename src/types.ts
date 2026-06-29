@@ -60,4 +60,8 @@ export interface Agent {
   subagents: SubagentInfo[];
   /** True when AGENTS.md was found in cwd and injected via --append-system-prompt */
   agentsMdLoaded: boolean;
+  /** Requested model at spawn time (passed to --model flag; undefined = user default) */
+  requestedModel?: string;
+  /** Requested effort at spawn time (passed to --effort flag; undefined = not set) */
+  effort?: string;
 }

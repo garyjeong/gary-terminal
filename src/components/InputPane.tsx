@@ -13,10 +13,6 @@ export function InputPane(): React.ReactElement {
 
   const focusRegion = useStore((state) => state.ui.focusRegion);
   const focusedAgentId = useStore((state) => state.focusedAgentId);
-  const sessionSends = useStore((state) => state.sessionSends);
-  const addMessage = useStore((state) => state.addMessage);
-  const setAgentStatus = useStore((state) => state.setAgentStatus);
-  const setWaiting = useStore((state) => state.setWaiting);
 
   // Slash autocomplete
   const autocomplete = useStore((state) => state.slashAutocomplete);
@@ -145,17 +141,13 @@ export function InputPane(): React.ReactElement {
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    addMessage(focusedAgentId, {
-      id: `msg-${Date.now()}`,
-      role: 'user',
-      content: trimmed,
-    });
-
-    const sessionSend = sessionSends[focusedAgentId];
-    if (sessionSend) {
-      sessionSend(trimmed);
-      setAgentStatus(focusedAgentId, 'running');
-      setWaiting(false);
+    // Route local-handled slash commands
+    if (trimmed === '/clear') {
+      useStore.getState().dispatchOp(focusedAgentId, { type: 'clear' });
+    } else if (trimmed.startsWith('/compact')) {
+      useStore.getState().dispatchOp(focusedAgentId, { type: 'compact' });
+    } else {
+      useStore.getState().dispatchOp(focusedAgentId, { type: 'submit', text: trimmed });
     }
 
     setCompletionValue('');

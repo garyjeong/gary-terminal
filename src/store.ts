@@ -13,6 +13,15 @@ import type { SessionMeta } from './data/sessionStore.js';
 import type { KeyMode } from './keymap.js';
 
 // ---------------------------------------------------------------------------
+// Op types
+// ---------------------------------------------------------------------------
+export type AgentOp =
+  | { type: 'submit'; text: string }
+  | { type: 'interrupt' }
+  | { type: 'clear' }
+  | { type: 'compact' };
+
+// ---------------------------------------------------------------------------
 // Tool input summariser (moved from App.tsx — used by applySessionEvent)
 // ---------------------------------------------------------------------------
 function summarizeToolInput(name: string, input: Record<string, unknown>): string {
@@ -60,6 +69,13 @@ interface AppState {
      * - 'blocked' : show only blocked agents (permission-prompt waiting)
      */
     agentFilter: AgentFilter;
+    /**
+     * Copy mode: freezes periodic re-renders (spinner, system stats) so the
+     * user can select and copy text from the terminal. While active, the app
+     * exits the alt-screen buffer and dumps the conversation as plain text to
+     * the main buffer (with scrollback).
+     */
+    copyMode: boolean;
   };
   system: {
     cpu: number;
@@ -79,6 +95,10 @@ interface AppState {
    * cause Zustand re-render issues when embedded in arrays.
    */
   sessionSends: Record<string, (text: string) => void>;
+  sessionInterrupts: Record<string, () => void>;
+  dispatchOp: (agentId: string, op: AgentOp) => void;
+  registerSessionInterrupt: (agentId: string, fn: () => void) => void;
+  unregisterSessionInterrupt: (agentId: string) => void;
 
   // ② Conversation scroll: 0 = tail (bottom), positive = messages skipped from end
   conversationScrollOffset: number;
@@ -143,6 +163,8 @@ interface AppState {
   popMode: () => void;
   /** Cycle agent filter: all → active → blocked → all */
   cycleAgentFilter: () => void;
+  /** Toggle copy mode on/off (manages modeStack automatically). */
+  toggleCopyMode: () => void;
 
   // Multi-session management
   addAgent: (agent: Agent) => void;
@@ -215,13 +237,26 @@ interface AppState {
   };
   openPermissionDialog: (toolName: string, toolInput: Record<string, unknown>, toolUseId: string) => void;
   closePermissionDialog: () => void;
+
+  // New session options dialog (Ctrl+N)
+  newSessionDialog: {
+    open: boolean;
+    /** 'model' row focused or 'effort' row focused */
+    focusRow: 'model' | 'effort';
+    modelIdx: number;
+    effortIdx: number;
+  };
+  openNewSessionDialog: () => void;
+  closeNewSessionDialog: () => void;
+  moveNewSessionRow: (delta: number) => void;
+  cycleNewSessionOption: (delta: number) => void;
 }
 
 // ---------------------------------------------------------------------------
 // Initial state helpers
 // ---------------------------------------------------------------------------
 
-function makeAgent(id: string, title: string): Agent {
+function makeAgent(id: string, title: string, opts?: { requestedModel?: string; effort?: string }): Agent {
   return {
     id,
     title,
@@ -236,6 +271,8 @@ function makeAgent(id: string, title: string): Agent {
     contextWindow: 0,
     subagents: [],
     agentsMdLoaded: false,
+    requestedModel: opts?.requestedModel,
+    effort: opts?.effort,
   };
 }
 
@@ -245,7 +282,7 @@ const LIVE_AGENT: Agent = makeAgent('live', 'claude session');
 // Store
 // ---------------------------------------------------------------------------
 
-export const useStore = create<AppState>()((set) => ({
+export const useStore = create<AppState>()((set, get) => ({
   agents: [LIVE_AGENT],
   focusedAgentId: 'live',
   ui: {
@@ -257,6 +294,7 @@ export const useStore = create<AppState>()((set) => ({
     waiting: true,
     modeStack: [],
     agentFilter: 'all' as AgentFilter,
+    copyMode: false,
   },
   system: {
     cpu: 0,
@@ -274,6 +312,7 @@ export const useStore = create<AppState>()((set) => ({
   },
 
   sessionSends: {},
+  sessionInterrupts: {},
   conversationScrollOffset: 0,
 
   references: {
@@ -320,6 +359,13 @@ export const useStore = create<AppState>()((set) => ({
     toolName: '',
     toolInput: {},
     toolUseId: '',
+  },
+
+  newSessionDialog: {
+    open: false,
+    focusRow: 'model',
+    modelIdx: 0,
+    effortIdx: 0,
   },
 
   // ── Session event reducer ────────────────────────────────────────────────
@@ -633,6 +679,16 @@ export const useStore = create<AppState>()((set) => ({
       return { ui: { ...state.ui, agentFilter: next } };
     }),
 
+  toggleCopyMode: () =>
+    set((state) => {
+      const entering = !state.ui.copyMode;
+      const top = state.ui.modeStack[state.ui.modeStack.length - 1];
+      const newStack: KeyMode[] = entering
+        ? (top === 'copy' ? state.ui.modeStack : [...state.ui.modeStack, 'copy'])
+        : (top === 'copy' ? state.ui.modeStack.slice(0, -1) : state.ui.modeStack);
+      return { ui: { ...state.ui, copyMode: entering, modeStack: newStack } };
+    }),
+
   // ── Multi-session management ─────────────────────────────────────────────
 
   addAgent: (agent: Agent) =>
@@ -658,6 +714,99 @@ export const useStore = create<AppState>()((set) => ({
       void _removed;
       return { sessionSends: rest };
     }),
+
+  registerSessionInterrupt: (agentId: string, fn: () => void) =>
+    set((state) => ({
+      sessionInterrupts: { ...state.sessionInterrupts, [agentId]: fn },
+    })),
+
+  unregisterSessionInterrupt: (agentId: string) =>
+    set((state) => {
+      const { [agentId]: _removed, ...rest } = state.sessionInterrupts;
+      void _removed;
+      return { sessionInterrupts: rest };
+    }),
+
+  dispatchOp: (agentId: string, op: AgentOp) => {
+    const state = get();
+    switch (op.type) {
+      case 'submit': {
+        const send = state.sessionSends[agentId];
+        if (!send) break;
+        set((s) => ({
+          agents: s.agents.map((a) =>
+            a.id === agentId
+              ? {
+                  ...a,
+                  messages: [
+                    ...a.messages,
+                    {
+                      id: `msg-${Date.now()}`,
+                      role: 'user' as const,
+                      content: op.text,
+                    },
+                  ],
+                  status: 'running' as const,
+                }
+              : a,
+          ),
+          ui: s.focusedAgentId === agentId ? { ...s.ui, waiting: false } : s.ui,
+          conversationScrollOffset:
+            agentId === s.focusedAgentId ? 0 : s.conversationScrollOffset,
+        }));
+        send(op.text);
+        break;
+      }
+      case 'interrupt': {
+        const interrupt = state.sessionInterrupts[agentId];
+        if (!interrupt) break;
+        interrupt();
+        set((s) => ({
+          agents: s.agents.map((a) =>
+            a.id === agentId ? { ...a, status: 'waiting' as const } : a,
+          ),
+          ui: s.focusedAgentId === agentId ? { ...s.ui, waiting: true } : s.ui,
+        }));
+        break;
+      }
+      case 'clear': {
+        set((s) => ({
+          agents: s.agents.map((a) =>
+            a.id === agentId
+              ? { ...a, messages: [], streamingText: '', toolCalls: [] }
+              : a,
+          ),
+          conversationScrollOffset:
+            agentId === s.focusedAgentId ? 0 : s.conversationScrollOffset,
+        }));
+        break;
+      }
+      case 'compact': {
+        // /compact is not available in headless stream-json mode — local notice
+        set((s) => ({
+          agents: s.agents.map((a) =>
+            a.id === agentId
+              ? {
+                  ...a,
+                  messages: [
+                    ...a.messages,
+                    {
+                      id: `sys-${Date.now()}`,
+                      role: 'assistant' as const,
+                      content:
+                        '[시스템] /compact은 헤드리스 모드에서 지원되지 않습니다. /clear로 대화 버퍼를 비울 수 있습니다.',
+                    },
+                  ],
+                }
+              : a,
+          ),
+          conversationScrollOffset:
+            agentId === s.focusedAgentId ? 0 : s.conversationScrollOffset,
+        }));
+        break;
+      }
+    }
+  },
 
   // ── Per-agent state ──────────────────────────────────────────────────────
 
@@ -1058,6 +1207,57 @@ export const useStore = create<AppState>()((set) => ({
         permissionDialog: { ...state.permissionDialog, open: false },
         ui: { ...state.ui, modeStack: newStack },
       };
+    }),
+
+  // ── New session dialog actions ────────────────────────────────────────────
+
+  openNewSessionDialog: () =>
+    set((state) => {
+      const top = state.ui.modeStack[state.ui.modeStack.length - 1];
+      const newStack: KeyMode[] = top === 'newsession'
+        ? state.ui.modeStack
+        : [...state.ui.modeStack, 'newsession'];
+      return {
+        newSessionDialog: { ...state.newSessionDialog, open: true, focusRow: 'model' },
+        ui: { ...state.ui, modeStack: newStack },
+      };
+    }),
+
+  closeNewSessionDialog: () =>
+    set((state) => {
+      const top = state.ui.modeStack[state.ui.modeStack.length - 1];
+      const newStack: KeyMode[] = top === 'newsession'
+        ? state.ui.modeStack.slice(0, -1)
+        : state.ui.modeStack;
+      return {
+        newSessionDialog: { ...state.newSessionDialog, open: false },
+        ui: { ...state.ui, modeStack: newStack },
+      };
+    }),
+
+  moveNewSessionRow: (delta: number) =>
+    set((state) => {
+      const next: 'model' | 'effort' =
+        state.newSessionDialog.focusRow === 'model' ? 'effort' : 'model';
+      void delta; // delta kept for symmetry; only 2 rows so always toggles
+      return {
+        newSessionDialog: { ...state.newSessionDialog, focusRow: next },
+      };
+    }),
+
+  cycleNewSessionOption: (delta: number) =>
+    set((state) => {
+      // MODEL_OPTIONS_LEN = 4 (default/opus/sonnet/haiku), EFFORT_OPTIONS_LEN = 5 (default/low/medium/high/xhigh)
+      const MODEL_LEN = 4;
+      const EFFORT_LEN = 5;
+      const { focusRow, modelIdx, effortIdx } = state.newSessionDialog;
+      if (focusRow === 'model') {
+        const next = ((modelIdx + delta) % MODEL_LEN + MODEL_LEN) % MODEL_LEN;
+        return { newSessionDialog: { ...state.newSessionDialog, modelIdx: next } };
+      } else {
+        const next = ((effortIdx + delta) % EFFORT_LEN + EFFORT_LEN) % EFFORT_LEN;
+        return { newSessionDialog: { ...state.newSessionDialog, effortIdx: next } };
+      }
     }),
 }));
 

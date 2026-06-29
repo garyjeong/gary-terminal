@@ -1,6 +1,6 @@
 // ── Mode types ─────────────────────────────────────────────────────────────────
 /** Overlay modes that sit on top of the base key routing. */
-export type KeyMode = 'cheatsheet' | 'resume' | 'slash' | 'file' | 'permission';
+export type KeyMode = 'cheatsheet' | 'resume' | 'slash' | 'file' | 'permission' | 'newsession' | 'copy';
 
 // ── Context-based key binding map ──────────────────────────────────────────────
 export type KeyContext =
@@ -14,7 +14,9 @@ export type KeyContext =
   | 'overlay-file'
   | 'overlay-resume'
   | 'overlay-cheatsheet'
-  | 'overlay-permission';
+  | 'overlay-permission'
+  | 'overlay-newsession'
+  | 'overlay-copy';
 
 export interface ContextKeyEntry {
   key: string;
@@ -39,6 +41,8 @@ export const KEYMAP_CONTEXTS: Record<KeyContext, ContextKeyEntry[]> = {
     { key: 'Ctrl+R',      desc: '모니터링 새로고침',     action: 'refresh' },
     { key: 'Ctrl+O',      desc: '세션 재개 (resume)',   action: 'openResume' },
     { key: 'Ctrl+F',      desc: '에이전트 필터 순환',    action: 'cycleFilter' },
+    { key: 'Ctrl+X',      desc: '현재 턴 인터럽트 (실행 중)',  action: 'interrupt' },
+    { key: 'Ctrl+Y',      desc: 'Copy mode (텍스트 선택/복사)', action: 'copyMode' },
     { key: '?',           desc: '단축키 도움말',         action: 'cheatsheet' },
   ],
   select: [
@@ -90,6 +94,15 @@ export const KEYMAP_CONTEXTS: Record<KeyContext, ContextKeyEntry[]> = {
     { key: 'y',          desc: '승인 (allow)',           action: 'allow' },
     { key: 'n / Esc',   desc: '거부 (deny)',             action: 'deny' },
   ],
+  'overlay-newsession': [
+    { key: '↑↓',        desc: '모델/effort 행 이동',    action: 'moveRow' },
+    { key: '←→',        desc: '옵션 변경',               action: 'cycleOption' },
+    { key: 'Enter',     desc: '세션 생성',               action: 'spawn' },
+    { key: 'Esc',       desc: '취소',                    action: 'close' },
+  ],
+  'overlay-copy': [
+    { key: 'Ctrl+Y',    desc: 'Copy mode 종료 / 복귀',  action: 'exitCopyMode' },
+  ],
 };
 
 // ── Legacy constant (used by App.tsx for action names) ─────────────────────────
@@ -115,8 +128,9 @@ export const CHEATSHEET_ENTRIES = [
   { key: '↑↓ (대화)',        desc: '대화 스크롤' },
   { key: 'PgUp / Ctrl+U',    desc: '대화 위로 스크롤' },
   { key: 'PgDn / Ctrl+D',    desc: '대화 아래로 스크롤' },
-  { key: 'Ctrl+N',            desc: '새 세션 생성' },
+  { key: 'Ctrl+N',            desc: '새 세션 생성 (옵션 피커)' },
   { key: 'Ctrl+O',            desc: '세션 재개 (resume)' },
+  { key: 'Ctrl+X (실행 중)', desc: '현재 턴 중단 (인터럽트)' },
   { key: 'Ctrl+W',            desc: '현재 세션 닫기' },
   { key: '?',                 desc: '단축키 도움말' },
   { key: 'q / Ctrl+C',       desc: '종료' },
@@ -125,4 +139,5 @@ export const CHEATSHEET_ENTRIES = [
   { key: '↑↓ (팝업)',        desc: '항목 이동' },
   { key: 'Tab / Enter (팝업)', desc: '명령어 선택' },
   { key: 'Esc (팝업)',        desc: '팝업 닫기' },
+  { key: 'Ctrl+Y',            desc: 'Copy mode 진입/복귀 (텍스트 선택)' },
 ];

@@ -9,6 +9,9 @@ export function useSystemStats(): void {
     let active = true;
 
     async function poll(): Promise<void> {
+      // Skip polling while copy-mode is active to prevent re-renders that would
+      // corrupt the static conversation dump in the main screen buffer.
+      if (useStore.getState().ui.copyMode) return;
       try {
         const [load, mem] = await Promise.all([si.currentLoad(), si.mem()]);
         if (!active) return;

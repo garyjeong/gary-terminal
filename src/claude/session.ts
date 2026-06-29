@@ -95,6 +95,7 @@ export class ClaudeSession extends EventEmitter {
   private readonly agentId: string;
   private procStdin: Writable | null = null;
   private procKill: (() => void) | null = null;
+  private _interruptFn: (() => void) | null = null;
   private stopped = false;
   private _streamingText = '';
   /** Accumulated text from partial assistant events (for delta diffs) */
@@ -115,7 +116,15 @@ export class ClaudeSession extends EventEmitter {
   // Lifecycle
   // -------------------------------------------------------------------------
 
-  start(opts?: { resumeSessionId?: string; appendSystemPrompt?: string; settingsPath?: string }): void {
+  start(opts?: {
+    resumeSessionId?: string;
+    appendSystemPrompt?: string;
+    settingsPath?: string;
+    /** --model <model>: override claude model (e.g. 'claude-sonnet-4-6'). Omit for user default. */
+    model?: string;
+    /** --effort <level>: set reasoning effort (low/medium/high/xhigh/max). Omit for default. */
+    effort?: string;
+  }): void {
     const args = [
       '-p',
       '--output-format', 'stream-json',
@@ -134,6 +143,12 @@ export class ClaudeSession extends EventEmitter {
     if (opts?.settingsPath) {
       args.push('--settings', opts.settingsPath);
     }
+    if (opts?.model) {
+      args.push('--model', opts.model);
+    }
+    if (opts?.effort) {
+      args.push('--effort', opts.effort);
+    }
     const proc = execa(
       'claude',
       args,
@@ -151,6 +166,14 @@ export class ClaudeSession extends EventEmitter {
         proc.kill();
       } catch {
         // Ignore errors during shutdown (process may already be gone)
+      }
+    };
+
+    this._interruptFn = () => {
+      try {
+        proc.kill('SIGINT' as NodeJS.Signals);
+      } catch {
+        // ignore if process is already gone
       }
     };
 
@@ -176,7 +199,8 @@ export class ClaudeSession extends EventEmitter {
       if (
         anyErr.exitCode === 143 ||
         anyErr.signal === 'SIGTERM' ||
-        anyErr.signal === 'SIGKILL'
+        anyErr.signal === 'SIGKILL' ||
+        anyErr.signal === 'SIGINT'
       ) {
         return;
       }
@@ -194,11 +218,16 @@ export class ClaudeSession extends EventEmitter {
     this.procKill?.();
     this.procStdin = null;
     this.procKill = null;
+    this._interruptFn = null;
   }
 
   // -------------------------------------------------------------------------
   // Sending
   // -------------------------------------------------------------------------
+
+  interrupt(): void {
+    this._interruptFn?.();
+  }
 
   sendMessage(text: string): void {
     if (!this.procStdin) return;

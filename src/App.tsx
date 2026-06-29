@@ -7,6 +7,7 @@ import { MainColumn } from './components/MainColumn.js';
 import { CheatSheet } from './components/CheatSheet.js';
 import { ResumeDialog } from './components/ResumeDialog.js';
 import { PermissionDialog } from './components/PermissionDialog.js';
+import { NewSessionDialog, resolveModelFlag, resolveEffortFlag } from './components/NewSessionDialog.js';
 import { useStore, makeAgent } from './store.js';
 import { PermissionServer } from './claude/permissionServer.js';
 import { useSystemStats } from './hooks/useSystemStats.js';
@@ -94,11 +95,75 @@ export function App(): React.ReactElement {
   const cycleAgentFilter = useStore((state) => state.cycleAgentFilter);
   const openPermissionDialog = useStore((state) => state.openPermissionDialog);
   const closePermissionDialog = useStore((state) => state.closePermissionDialog);
+  const openNewSessionDialog = useStore((state) => state.openNewSessionDialog);
+  const closeNewSessionDialog = useStore((state) => state.closeNewSessionDialog);
+  const moveNewSessionRow = useStore((state) => state.moveNewSessionRow);
+  const cycleNewSessionOption = useStore((state) => state.cycleNewSessionOption);
+  const toggleCopyMode = useStore((state) => state.toggleCopyMode);
+  const copyMode = useStore((state) => state.ui.copyMode);
 
   useSystemStats();
   // Pass stopAll as cleanup so SIGTERM/SIGINT set stopped=true on all sessions
   // before their child processes are reaped — preventing exit-143 error messages.
   useAltScreen(() => managerRef.current.stopAll());
+
+  // -------------------------------------------------------------------------
+  // Copy-mode: alt-screen exit/restore
+  //
+  // When copyMode becomes true, Ink has already re-rendered (spinner stopped,
+  // stats frozen). We then exit alt-screen and dump the focused conversation as
+  // plain text so the user can select/copy via mouse in the main buffer (with
+  // scrollback). On exit, we re-enter alt-screen and the next Ink render
+  // restores the full TUI.
+  //
+  // The re-enter write is also done synchronously in the Ctrl+Y handler (input
+  // side) BEFORE toggling state, so Ink's next render goes to alt-screen.
+  // The effect write is a harmless second clear that ensures cursor position.
+  // -------------------------------------------------------------------------
+  const hasBeenInCopyModeRef = useRef(false);
+
+  useEffect(() => {
+    if (!process.stdout.isTTY) return;
+
+    if (copyMode) {
+      hasBeenInCopyModeRef.current = true;
+
+      // Exit alt-screen → switch to main buffer (with scrollback)
+      process.stdout.write('\x1b[?1049l');
+
+      // Dump the focused conversation as plain text
+      const state = useStore.getState();
+      const agent = state.agents.find((a) => a.id === state.focusedAgentId);
+      const msgs = agent?.messages ?? [];
+      const streaming = agent?.streamingText ?? '';
+
+      process.stdout.write('\n');
+      process.stdout.write('\x1b[1;33m┌─ COPY MODE ────────────────────────────────────────────────────────┐\x1b[0m\n');
+      process.stdout.write('\x1b[1;33m│  텍스트를 마우스로 선택 → 복사하세요.                              │\x1b[0m\n');
+      process.stdout.write('\x1b[1;33m│  Ctrl+Y 로 gary-terminal 로 복귀.                                  │\x1b[0m\n');
+      process.stdout.write('\x1b[1;33m└────────────────────────────────────────────────────────────────────┘\x1b[0m\n\n');
+
+      for (const msg of msgs) {
+        if (msg.role === 'user') {
+          process.stdout.write(`\x1b[36m[you]\x1b[0m ${msg.content}\n\n`);
+        } else if (msg.role === 'assistant') {
+          process.stdout.write(`${msg.content}\n\n`);
+        } else if (msg.role === 'tool' || msg.role === 'codex') {
+          const prefix = msg.role === 'codex' ? '▸ codex' : `● ${msg.toolName ?? 'Tool'}`;
+          process.stdout.write(`\x1b[33m${prefix}:\x1b[0m ${msg.content}\n\n`);
+        }
+      }
+      if (streaming) {
+        process.stdout.write(`${streaming}\n\n`);
+      }
+
+      process.stdout.write('\x1b[1;33m── Ctrl+Y 로 복귀 ──────────────────────────────────────────────────\x1b[0m\n');
+
+    } else if (hasBeenInCopyModeRef.current) {
+      // Re-enter alt-screen and clear so Ink renders cleanly on top
+      process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H');
+    }
+  }, [copyMode]);
 
   // -------------------------------------------------------------------------
   // wireSession: subscribe to a session's events and delegate to the store
@@ -243,6 +308,7 @@ export function App(): React.ReactElement {
     const unsub = wireSession(LIVE_AGENT_ID, session);
     const store = useStore.getState();
     store.registerSessionSend(LIVE_AGENT_ID, (text) => session.sendMessage(text));
+    store.registerSessionInterrupt(LIVE_AGENT_ID, () => session.interrupt());
 
     // Inject AGENTS.md for the live session as well
     const agentsMdContent = loadAgentsMd();
@@ -291,7 +357,7 @@ export function App(): React.ReactElement {
   // Reads AGENTS.md from cwd and injects it via --append-system-prompt if found.
   // -------------------------------------------------------------------------
   const _startSession = useCallback(
-    (agentId: string, opts?: { resumeSessionId?: string }) => {
+    (agentId: string, opts?: { resumeSessionId?: string; model?: string; effort?: string }) => {
       // Load AGENTS.md once per session start (sync read — fast, happens once)
       const agentsMdContent = loadAgentsMd();
 
@@ -300,30 +366,37 @@ export function App(): React.ReactElement {
       const unsub = wireSession(agentId, session);
       sessionUnsubsRef.current.set(agentId, unsub);
       store.registerSessionSend(agentId, (text) => session.sendMessage(text));
+      store.registerSessionInterrupt(agentId, () => session.interrupt());
 
       // Track AGENTS.md status on the agent for UI display
       if (agentsMdContent) {
         store.setAgentsMdLoaded(agentId, true);
       }
 
-      session.start({ ...opts, appendSystemPrompt: agentsMdContent, settingsPath: settingsFileRef.current });
+      session.start({
+        resumeSessionId: opts?.resumeSessionId,
+        appendSystemPrompt: agentsMdContent,
+        settingsPath: settingsFileRef.current,
+        model: opts?.model,
+        effort: opts?.effort,
+      });
     },
     [wireSession],
   );
 
   // -------------------------------------------------------------------------
-  // Spawn a new claude session (Ctrl+N)
+  // Spawn a new claude session — called from the NewSessionDialog on Enter
   // -------------------------------------------------------------------------
-  const spawnNewSession = useCallback(() => {
+  const spawnNewSession = useCallback((opts?: { model?: string; effort?: string }) => {
     sessionCountRef.current++;
     const agentId = `session-${sessionCountRef.current}`;
     const title = `세션 ${sessionCountRef.current}`;
-    const newAgent: Agent = makeAgent(agentId, title);
+    const newAgent: Agent = makeAgent(agentId, title, { requestedModel: opts?.model, effort: opts?.effort });
 
     const store = useStore.getState();
     store.addAgent(newAgent);
     store.setFocusedAgent(agentId);
-    _startSession(agentId);
+    _startSession(agentId, opts);
   }, [_startSession]);
 
   // -------------------------------------------------------------------------
@@ -356,6 +429,7 @@ export function App(): React.ReactElement {
     sessionUnsubsRef.current.delete(currentId);
     managerRef.current.destroy(currentId);
     store.unregisterSessionSend(currentId);
+    store.unregisterSessionInterrupt(currentId);
     store.removeAgent(currentId);
   }, []);
 
@@ -410,6 +484,23 @@ export function App(): React.ReactElement {
       return;
     }
 
+    // ── Overlay: new session options dialog ────────────────────────────────
+    if (topMode === 'newsession') {
+      if (key.escape) { closeNewSessionDialog(); return; }
+      if (key.upArrow || key.downArrow) { moveNewSessionRow(key.downArrow ? 1 : -1); return; }
+      if (key.leftArrow) { cycleNewSessionOption(-1); return; }
+      if (key.rightArrow) { cycleNewSessionOption(1); return; }
+      if (key.return) {
+        const { modelIdx, effortIdx } = useStore.getState().newSessionDialog;
+        const model = resolveModelFlag(modelIdx);
+        const effort = resolveEffortFlag(effortIdx);
+        closeNewSessionDialog();
+        spawnNewSession({ model, effort });
+        return;
+      }
+      return; // swallow all other keys
+    }
+
     // ── Overlay: slash autocomplete ────────────────────────────────────────
     // InputPane's own useInput (isActive: isFocused) owns all slash popup keys
     // (↑↓ nav, Esc close, Tab apply, Enter via TextInput.onSubmit).
@@ -424,6 +515,20 @@ export function App(): React.ReactElement {
       return;
     }
 
+    // ── Overlay: copy mode ─────────────────────────────────────────────────
+    // Re-enter alt-screen synchronously BEFORE toggling state so Ink's next
+    // render goes to alt-screen rather than the main (static) buffer.
+    if (topMode === 'copy') {
+      if (key.ctrl && input === 'y') {
+        if (process.stdout.isTTY) {
+          process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H');
+        }
+        toggleCopyMode();
+        return;
+      }
+      return; // swallow all other keys while in copy mode
+    }
+
     // ── Base mode (no overlay) ─────────────────────────────────────────────
 
     // Global shortcuts — active in both select and active mode
@@ -432,11 +537,20 @@ export function App(): React.ReactElement {
       exit();
       return;
     }
-    if (key.ctrl && input === 'n') { spawnNewSession(); return; }
+    if (key.ctrl && input === 'n') { openNewSessionDialog(); return; }
     if (key.ctrl && input === 'o') { openResumeDialog(loadSessions()); return; }
     if (key.ctrl && input === 'w') { closeCurrentSession(); return; }
     if (key.ctrl && input === 'r') { refreshMonitoring(!mcpLoading); return; }
     if (key.ctrl && input === 'f') { cycleAgentFilter(); return; }
+    if (key.ctrl && input === 'y') { toggleCopyMode(); return; }
+    if (key.ctrl && input === 'x') {
+      const store = useStore.getState();
+      const agent = store.agents.find((a) => a.id === store.focusedAgentId);
+      if (agent?.status === 'running') {
+        store.dispatchOp(store.focusedAgentId, { type: 'interrupt' });
+      }
+      return;
+    }
     if (input === '?') { toggleCheatSheet(); return; }
 
     // ── SELECT mode: navigate between panels ──────────────────────────────
@@ -542,6 +656,7 @@ export function App(): React.ReactElement {
       <CheatSheet />
       <ResumeDialog />
       <PermissionDialog />
+      <NewSessionDialog />
     </Box>
   );
 }

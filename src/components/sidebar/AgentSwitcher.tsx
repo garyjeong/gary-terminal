@@ -2,7 +2,7 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import { useStore } from '../../store.js';
 import type { AgentFilter } from '../../store.js';
-import type { AgentStatus } from '../../types.js';
+import type { Agent, AgentStatus } from '../../types.js';
 
 // ③ Cap visible agent rows so the sidebar never overflows its vertical budget.
 // Each agent takes 1 row; header + 2 borders = 3 overhead rows in the panel.
@@ -32,6 +32,29 @@ function statusColor(status: AgentStatus): string {
     case 'done':
       return 'gray';
   }
+}
+
+/** Shorten a full claude model ID to a readable family name. */
+function shortModel(model: string): string {
+  if (!model) return '';
+  const m = model.toLowerCase();
+  if (m.includes('opus')) return 'opus';
+  if (m.includes('sonnet')) return 'son';
+  if (m.includes('haiku')) return 'hku';
+  if (m.includes('fable')) return 'fab';
+  return model.slice(0, 6);
+}
+
+/** Build the compact badge string for an agent row, e.g. "[opus·xhigh]" */
+function agentBadge(agent: Agent): string {
+  // Use sessionModel (filled after init) for the actual model; fall back to requestedModel.
+  const rawModel = agent.sessionModel || agent.requestedModel || '';
+  const modelPart = shortModel(rawModel);
+  const effortPart = agent.effort ?? '';
+  if (!modelPart && !effortPart) return '';
+  if (modelPart && effortPart) return `[${modelPart}·${effortPart}]`;
+  if (modelPart) return `[${modelPart}]`;
+  return `[·${effortPart}]`;
 }
 
 function filterLabel(filter: AgentFilter): string {
@@ -104,12 +127,14 @@ export function AgentSwitcher(): React.ReactElement {
       ) : (
         visible.map((agent) => {
           const isAgentSelected = agent.id === focusedAgentId;
+          const badge = agentBadge(agent);
           return (
             <Box key={agent.id} flexDirection="row">
               <Text color={statusColor(agent.status)}>{statusIcon(agent.status)} </Text>
               <Text color={isAgentSelected ? 'white' : 'gray'} bold={isAgentSelected}>
                 {agent.title}
               </Text>
+              {badge ? <Text color="gray" dimColor> {badge}</Text> : null}
               {isAgentSelected && <Text color="cyan"> ◀</Text>}
             </Box>
           );

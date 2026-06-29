@@ -97,15 +97,18 @@ export function ConversationPane(): React.ReactElement {
   const isActive = isSelected && focusMode === 'active';
   const borderColor = !isSelected ? 'gray' : isActive ? 'cyan' : 'yellow';
 
+  const copyMode = useStore((state) => state.ui.copyMode);
+
   const focusedAgent = agents.find((a) => a.id === focusedAgentId);
   const messages = focusedAgent?.messages ?? [];
   // Per-agent streaming text
   const streamingText = focusedAgent?.streamingText ?? '';
 
-  // Show thinking spinner: agent is running but no streaming text yet (first-token wait)
+  // Show thinking spinner: agent is running but no streaming text yet (first-token wait).
+  // Spinner is suppressed in copy-mode to freeze periodic re-renders.
   const isThinking =
     focusedAgent?.status === 'running' && streamingText === '' && scrollOffset === 0;
-  const spinnerFrame = useSpinner(isThinking);
+  const spinnerFrame = useSpinner(isThinking && !copyMode);
 
   // ② Determine which messages to render.
   const displayMessages =
