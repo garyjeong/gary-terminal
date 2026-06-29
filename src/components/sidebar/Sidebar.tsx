@@ -5,19 +5,19 @@ import { SubagentsPane } from './SubagentsPane.js';
 import { SystemPane } from './SystemPane.js';
 import { UsagePane } from './UsagePane.js';
 import { ReferencePane } from './ReferencePane.js';
+import { KeybindingsPane } from './KeybindingsPane.js';
 
 /**
- * ③ Sidebar height견고화
+ * Sidebar layout (top → bottom):
+ * 1. AgentSwitcher   — flexShrink=0, caps agent count internally
+ * 2. SubagentsPane   — flexShrink=0
+ * 3. SystemPane      — flexShrink=0, bpytop-style braille sparklines
+ * 4. UsagePane       — flexShrink=0
+ * 5. ReferencePane   — flexGrow=1, flexShrink=1 (absorbs spare space, shrinks first)
+ * 6. KeybindingsPane — flexShrink=1, compact 2-col grid at the bottom
  *
- * Each child panel uses overflow="hidden" on its own root Box so that when
- * Yoga's flex algorithm shrinks a panel (insufficient vertical space), the
- * content clips *inside* the border rather than spilling out and corrupting
- * adjacent panels.
- *
- * The flexGrow=1 wrapper at the bottom lets ReferencePane absorb spare
- * vertical space, and shrinks first when the terminal is short.  AgentSwitcher
- * caps its agent count internally so it never overflows its own border even
- * without shrinking.
+ * Each panel uses overflow="hidden" so content clips inside the border when
+ * Yoga's flex algorithm shrinks the panel.
  */
 export function Sidebar(): React.ReactElement {
   return (
@@ -29,6 +29,7 @@ export function Sidebar(): React.ReactElement {
       <Box flexGrow={1} flexShrink={1} flexDirection="column" overflow="hidden">
         <ReferencePane />
       </Box>
+      <KeybindingsPane />
     </Box>
   );
 }

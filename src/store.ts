@@ -76,11 +76,22 @@ interface AppState {
      * the main buffer (with scrollback).
      */
     copyMode: boolean;
+    /**
+     * Per-panel collapse state for sidebar panels that are not in the
+     * focus-region ring. Default: keybindings=true (collapsed) to save rows.
+     */
+    paneCollapsed: { keybindings: boolean };
   };
   system: {
     cpu: number;
     mem: number;
     ctx: number;
+    net: { rxKBs: number; txKBs: number };
+    disk: { usedPct: number };
+    cpuHistory: number[];
+    memHistory: number[];
+    netRxHistory: number[];
+    netTxHistory: number[];
   };
   usage: {
     /** Legacy global display; individual agent usage is in agent.usage */
@@ -156,7 +167,7 @@ interface AppState {
   toggleCheatSheet: () => void;
   setReferenceCursor: (cursor: 'skills' | 'mcp' | 'codex') => void;
   setWaiting: (waiting: boolean) => void;
-  updateSystemStats: (cpu: number, mem: number) => void;
+  updateSystemStats: (cpu: number, mem: number, net?: { rxKBs: number; txKBs: number }, disk?: { usedPct: number }) => void;
   /** Push a KeyMode onto the mode stack (idempotent — no-op if already present at top). */
   pushMode: (mode: KeyMode) => void;
   /** Pop the top KeyMode off the stack. */
@@ -165,6 +176,8 @@ interface AppState {
   cycleAgentFilter: () => void;
   /** Toggle copy mode on/off (manages modeStack automatically). */
   toggleCopyMode: () => void;
+  /** Toggle a sidebar panel collapse state (keybindings etc). */
+  togglePaneCollapse: (pane: 'keybindings') => void;
 
   // Multi-session management
   addAgent: (agent: Agent) => void;
@@ -250,6 +263,18 @@ interface AppState {
   closeNewSessionDialog: () => void;
   moveNewSessionRow: (delta: number) => void;
   cycleNewSessionOption: (delta: number) => void;
+
+  // ── Input history ────────────────────────────────────────────────────────
+  /** Last 50 user-sent messages, oldest first, most recent last. */
+  inputHistory: string[];
+  /** True when the input field is currently empty (for App.tsx bounce guard). */
+  inputIsEmpty: boolean;
+  /** True while user is navigating command history (suppresses panel-bounce on ↓). */
+  inputHistoryNavigating: boolean;
+
+  addInputHistory: (text: string) => void;
+  setInputIsEmpty: (empty: boolean) => void;
+  setInputHistoryNavigating: (navigating: boolean) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,11 +320,18 @@ export const useStore = create<AppState>()((set, get) => ({
     modeStack: [],
     agentFilter: 'all' as AgentFilter,
     copyMode: false,
+    paneCollapsed: { keybindings: true },
   },
   system: {
     cpu: 0,
     mem: 0,
     ctx: 68,
+    net: { rxKBs: 0, txKBs: 0 },
+    disk: { usedPct: 0 },
+    cpuHistory: [],
+    memHistory: [],
+    netRxHistory: [],
+    netTxHistory: [],
   },
   usage: {
     tokens: '0',
@@ -367,6 +399,10 @@ export const useStore = create<AppState>()((set, get) => ({
     modelIdx: 0,
     effortIdx: 0,
   },
+
+  inputHistory: [],
+  inputIsEmpty: true,
+  inputHistoryNavigating: false,
 
   // ── Session event reducer ────────────────────────────────────────────────
 
@@ -652,10 +688,25 @@ export const useStore = create<AppState>()((set, get) => ({
   setWaiting: (waiting: boolean) =>
     set((state) => ({ ui: { ...state.ui, waiting } })),
 
-  updateSystemStats: (cpu: number, mem: number) =>
-    set((state) => ({
-      system: { ...state.system, cpu, mem },
-    })),
+  updateSystemStats: (cpu: number, mem: number, net?: { rxKBs: number; txKBs: number }, disk?: { usedPct: number }) =>
+    set((state) => {
+      const HIST = 40;
+      const push = (arr: number[], val: number): number[] =>
+        arr.length >= HIST ? [...arr.slice(-(HIST - 1)), val] : [...arr, val];
+      return {
+        system: {
+          ...state.system,
+          cpu,
+          mem,
+          net: net ?? state.system.net,
+          disk: disk ?? state.system.disk,
+          cpuHistory: push(state.system.cpuHistory, cpu),
+          memHistory: push(state.system.memHistory, mem),
+          netRxHistory: net ? push(state.system.netRxHistory, net.rxKBs) : state.system.netRxHistory,
+          netTxHistory: net ? push(state.system.netTxHistory, net.txKBs) : state.system.netTxHistory,
+        },
+      };
+    }),
 
   pushMode: (mode: KeyMode) =>
     set((state) => {
@@ -688,6 +739,17 @@ export const useStore = create<AppState>()((set, get) => ({
         : (top === 'copy' ? state.ui.modeStack.slice(0, -1) : state.ui.modeStack);
       return { ui: { ...state.ui, copyMode: entering, modeStack: newStack } };
     }),
+
+  togglePaneCollapse: (pane) =>
+    set((state) => ({
+      ui: {
+        ...state.ui,
+        paneCollapsed: {
+          ...state.ui.paneCollapsed,
+          [pane]: !state.ui.paneCollapsed[pane],
+        },
+      },
+    })),
 
   // ── Multi-session management ─────────────────────────────────────────────
 
@@ -1259,6 +1321,17 @@ export const useStore = create<AppState>()((set, get) => ({
         return { newSessionDialog: { ...state.newSessionDialog, effortIdx: next } };
       }
     }),
+
+  addInputHistory: (text: string) =>
+    set((state) => {
+      const MAX_HISTORY = 50;
+      const next = [...state.inputHistory, text].slice(-MAX_HISTORY);
+      return { inputHistory: next };
+    }),
+
+  setInputIsEmpty: (empty: boolean) => set({ inputIsEmpty: empty }),
+
+  setInputHistoryNavigating: (navigating: boolean) => set({ inputHistoryNavigating: navigating }),
 }));
 
 // Export agent factory so App.tsx can create agents with all required fields.

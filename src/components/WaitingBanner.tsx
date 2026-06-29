@@ -14,7 +14,7 @@ export function WaitingBanner(): React.ReactElement | null {
       paddingX={1}
       justifyContent="center"
     >
-      <Text color="yellow">⏳ 입력 대기 중...</Text>
+      <Text color="yellow">○ 입력 대기 중...</Text>
     </Box>
   );
 }

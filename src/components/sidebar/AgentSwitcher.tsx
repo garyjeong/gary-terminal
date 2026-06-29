@@ -10,14 +10,10 @@ const MAX_VISIBLE_AGENTS = 4;
 
 function statusIcon(status: AgentStatus): string {
   switch (status) {
-    case 'running':
-      return '●';
-    case 'waiting':
-      return '⏳';
-    case 'blocked':
-      return '🔒';
-    case 'done':
-      return '✓';
+    case 'running':  return '●';
+    case 'waiting':  return '○';
+    case 'blocked':  return '!';
+    case 'done':     return '✓';
   }
 }
 

@@ -100,6 +100,7 @@ export function App(): React.ReactElement {
   const moveNewSessionRow = useStore((state) => state.moveNewSessionRow);
   const cycleNewSessionOption = useStore((state) => state.cycleNewSessionOption);
   const toggleCopyMode = useStore((state) => state.toggleCopyMode);
+  const togglePaneCollapse = useStore((state) => state.togglePaneCollapse);
   const copyMode = useStore((state) => state.ui.copyMode);
 
   useSystemStats();
@@ -543,6 +544,7 @@ export function App(): React.ReactElement {
     if (key.ctrl && input === 'r') { refreshMonitoring(!mcpLoading); return; }
     if (key.ctrl && input === 'f') { cycleAgentFilter(); return; }
     if (key.ctrl && input === 'y') { toggleCopyMode(); return; }
+    if (key.ctrl && input === 'k') { togglePaneCollapse('keybindings'); return; }
     if (key.ctrl && input === 'x') {
       const store = useStore.getState();
       const agent = store.agents.find((a) => a.id === store.focusedAgentId);
@@ -598,11 +600,14 @@ export function App(): React.ReactElement {
         return;
       }
       if (focusRegion === 'input') {
-        // topMode==='slash' already returned above, so popup is closed here.
-        // ↑↓ from the input field pops to SELECT mode and moves between panels
-        // directly — no need to press Esc first. (Preserves the panel-nav shortcut.)
-        setFocusMode('select');
-        cycleFocusRegion(key.downArrow ? 'down' : 'up');
+        // Only bounce to select mode when input has text AND we're not navigating
+        // command history. When empty (or in history-nav mode), InputPane handles
+        // ↑↓ for command history — App.tsx must not also bounce.
+        const { inputIsEmpty, inputHistoryNavigating } = useStore.getState();
+        if (!inputIsEmpty && !inputHistoryNavigating) {
+          setFocusMode('select');
+          cycleFocusRegion(key.downArrow ? 'down' : 'up');
+        }
         return;
       }
     }

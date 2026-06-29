@@ -42,7 +42,7 @@ const MessageRow = React.memo(function MessageRow({ message }: { message: Messag
           ? '✓'
           : message.toolStatus === 'error'
           ? '✗'
-          : '⏳';
+          : '●';
       const statusColor =
         message.toolStatus === 'ok'
           ? 'green'
@@ -66,7 +66,7 @@ const MessageRow = React.memo(function MessageRow({ message }: { message: Messag
           ? '✓'
           : message.toolStatus === 'error'
           ? '✗'
-          : '⏳';
+          : '●';
       const statusColor =
         message.toolStatus === 'ok'
           ? 'green'
@@ -155,27 +155,36 @@ export function ConversationPane(): React.ReactElement {
       {/*
        * Messages box: fixed height + flex-end packs to bottom,
        * overflow="hidden" clips upward overflow.
+       * When empty, center a hint message instead.
        */}
       <Box
         flexDirection="column"
         height={messagesHeight}
-        justifyContent="flex-end"
+        justifyContent={displayMessages.length === 0 && !showStreaming && !isThinking ? 'center' : 'flex-end'}
         overflow="hidden"
       >
-        {displayMessages.map((msg) => (
-          <MessageRow key={msg.id} message={msg} />
-        ))}
-        {showStreaming && (
-          <Box flexDirection="row">
-            <Text color="cyan" dimColor>▍ </Text>
-            <Text color="white" wrap="wrap">{streamingText}</Text>
+        {displayMessages.length === 0 && !showStreaming && !isThinking ? (
+          <Box alignItems="center">
+            <Text color="gray" dimColor>아직 대화가 없습니다 · 메시지를 입력해 시작하세요</Text>
           </Box>
-        )}
-        {isThinking && (
-          <Box flexDirection="row">
-            <Text color="cyan" dimColor>{spinnerFrame} </Text>
-            <Text color="gray" dimColor>생각 중…</Text>
-          </Box>
+        ) : (
+          <>
+            {displayMessages.map((msg) => (
+              <MessageRow key={msg.id} message={msg} />
+            ))}
+            {showStreaming && (
+              <Box flexDirection="row">
+                <Text color="cyan" dimColor>▍ </Text>
+                <Text color="white" wrap="wrap">{streamingText}</Text>
+              </Box>
+            )}
+            {isThinking && (
+              <Box flexDirection="row">
+                <Text color="cyan" dimColor>{spinnerFrame} </Text>
+                <Text color="gray" dimColor>생각 중…</Text>
+              </Box>
+            )}
+          </>
         )}
       </Box>
     </Box>

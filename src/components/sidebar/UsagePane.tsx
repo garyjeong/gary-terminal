@@ -10,7 +10,11 @@ function fmtTokensLocal(n: number): string {
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return `${n}`;
 }
-// fmtTokensLocal used for usageHistory display
+
+/** Fixed-width label (8 chars) for consistent column alignment. */
+function Label({ children }: { children: string }): React.ReactElement {
+  return <Text color="gray">{children.padEnd(8)}</Text>;
+}
 
 export function UsagePane(): React.ReactElement {
   const { tokens, todo } = useStore((state) => state.usage);
@@ -35,117 +39,114 @@ export function UsagePane(): React.ReactElement {
       overflow="hidden"
       paddingX={1}
     >
-      <Text bold color={isFocused ? 'cyan' : 'white'}>
-        사용량·작업
-      </Text>
+      <Text bold color={isFocused ? 'cyan' : 'white'}>사용량</Text>
 
       {/* ── Claude 섹션 ─────────────────────────────────────────────────── */}
-      <Box flexDirection="column">
-        <Text bold color="cyan">─ Claude</Text>
+      <Text bold color="cyan">─ Claude</Text>
 
-        {/* 라이브 세션 토큰 (per-agent 누적) */}
+      {/* 라이브 세션 토큰 */}
+      <Box flexDirection="row">
+        <Label>세션</Label>
+        <Text color="yellow">{tokens}</Text>
+        <Text color="gray"> tok</Text>
+      </Box>
+
+      {/* JSONL 히스토리 */}
+      {usageHistory !== null && (
         <Box flexDirection="row">
-          <Text color="gray">  세션 </Text>
-          <Text color="yellow">{tokens}</Text>
+          <Label>오늘</Label>
+          <Text color="yellow">{fmtTokensLocal(usageHistory.todayTokens)}</Text>
+          <Text color="gray">/</Text>
+          <Text color="yellow">{fmtTokensLocal(usageHistory.monthTokens)}</Text>
           <Text color="gray"> tok</Text>
         </Box>
+      )}
 
-        {/* JSONL 히스토리 (오늘/달) */}
-        {usageHistory !== null && (
-          <Box flexDirection="row">
-            <Text color="gray">  오늘 </Text>
-            <Text color="yellow">{fmtTokensLocal(usageHistory.todayTokens)}</Text>
-            <Text color="gray"> · 달 </Text>
-            <Text color="yellow">{fmtTokensLocal(usageHistory.monthTokens)}</Text>
-            <Text color="gray"> tok</Text>
-          </Box>
-        )}
-
-        {/* Rate-limit 창 — OAuth API */}
-        {claudeUsageLoading && claudeUsage === null && (
-          <Text color="gray" dimColor>  rate-limit 조회중…</Text>
-        )}
-        {claudeUsage !== null && (() => {
-          const { fiveHour, sevenDay, sevenDaySonnet, subscriptionType } = claudeUsage;
-          const fhColor = utilizationColor(fiveHour.utilization);
-          const fhBar = utilizationBar(fiveHour.utilization, 8);
-          const fhReset = formatResetTime(fiveHour.resetsAt);
-          return (
-            <Box flexDirection="column">
-              {/* 5시간 창 */}
-              <Box flexDirection="row">
-                <Text color="gray">  5h </Text>
-                <Text color={fhColor}>{fhBar}</Text>
-                <Text color={fhColor}> {fiveHour.utilization}%</Text>
-                {fhReset ? <Text color="gray"> ↺{fhReset}</Text> : null}
-              </Box>
-              {/* 7일 창 (max 플랜만) */}
-              {sevenDay !== undefined && (() => {
-                const wColor = utilizationColor(sevenDay.utilization);
-                const wBar = utilizationBar(sevenDay.utilization, 8);
-                const wReset = formatResetTime(sevenDay.resetsAt);
-                return (
-                  <Box flexDirection="row">
-                    <Text color="gray">  7d </Text>
-                    <Text color={wColor}>{wBar}</Text>
-                    <Text color={wColor}> {sevenDay.utilization}%</Text>
-                    {wReset ? <Text color="gray"> ↺{wReset}</Text> : null}
-                  </Box>
-                );
-              })()}
-              {/* Sonnet 7일 (있을 때만) */}
-              {sevenDaySonnet !== undefined && sevenDaySonnet.utilization > 0 && (() => {
-                const sColor = utilizationColor(sevenDaySonnet.utilization);
-                return (
-                  <Box flexDirection="row">
-                    <Text color="gray">  7d-snnt </Text>
-                    <Text color={sColor}>{sevenDaySonnet.utilization}%</Text>
-                  </Box>
-                );
-              })()}
-              {/* 플랜 표시 */}
-              <Text color="gray" dimColor>  플랜: {subscriptionType}</Text>
+      {/* Rate-limit 창 — OAuth API */}
+      {claudeUsageLoading && claudeUsage === null && (
+        <Text color="gray" dimColor>조회중…</Text>
+      )}
+      {claudeUsage !== null && (() => {
+        const { fiveHour, sevenDay, sevenDaySonnet, subscriptionType } = claudeUsage;
+        const fhColor = utilizationColor(fiveHour.utilization);
+        const fhBar = utilizationBar(fiveHour.utilization, 6);
+        const fhReset = formatResetTime(fiveHour.resetsAt);
+        return (
+          <>
+            {/* 5시간 창 */}
+            <Box flexDirection="row">
+              <Label>5h</Label>
+              <Text color={fhColor}>{fhBar}</Text>
+              <Text color={fhColor}> {String(fiveHour.utilization).padStart(3)}%</Text>
+              {fhReset ? <Text color="gray"> ↺{fhReset}</Text> : null}
             </Box>
-          );
-        })()}
-      </Box>
+            {/* 7일 창 */}
+            {sevenDay !== undefined && (() => {
+              const wColor = utilizationColor(sevenDay.utilization);
+              const wBar = utilizationBar(sevenDay.utilization, 6);
+              const wReset = formatResetTime(sevenDay.resetsAt);
+              return (
+                <Box flexDirection="row">
+                  <Label>7d</Label>
+                  <Text color={wColor}>{wBar}</Text>
+                  <Text color={wColor}> {String(sevenDay.utilization).padStart(3)}%</Text>
+                  {wReset ? <Text color="gray"> ↺{wReset}</Text> : null}
+                </Box>
+              );
+            })()}
+            {/* Sonnet 7일 */}
+            {sevenDaySonnet !== undefined && sevenDaySonnet.utilization > 0 && (
+              <Box flexDirection="row">
+                <Label>7d-snnt</Label>
+                <Text color={utilizationColor(sevenDaySonnet.utilization)}>
+                  {String(sevenDaySonnet.utilization).padStart(3)}%
+                </Text>
+              </Box>
+            )}
+            <Text color="gray" dimColor>플랜: {subscriptionType}</Text>
+          </>
+        );
+      })()}
 
       {/* ── Codex 섹션 ──────────────────────────────────────────────────── */}
       {(codexUsage !== null || codexUsageLoading) && (
-        <Box flexDirection="column">
+        <>
           <Text bold color="magenta">─ Codex</Text>
           {codexUsageLoading && codexUsage === null && (
-            <Text color="gray" dimColor>  조회중…</Text>
+            <Text color="gray" dimColor>조회중…</Text>
           )}
           {codexUsage !== null && (
-            <Box flexDirection="column">
+            <>
               <Box flexDirection="row">
-                <Text color="gray">  총 </Text>
+                <Label>총</Label>
                 <Text color="magenta">{fmtTokens(codexUsage.totalTokens)}</Text>
-                <Text color="gray"> · 오늘 </Text>
+                <Text color="gray"> tok</Text>
+              </Box>
+              <Box flexDirection="row">
+                <Label>오늘</Label>
                 <Text color="magenta">{fmtTokens(codexUsage.todayTokens)}</Text>
                 <Text color="gray"> tok</Text>
               </Box>
               <Box flexDirection="row">
-                <Text color="gray">  세션 {codexUsage.sessionCount}개 · </Text>
-                <Text color="gray">{codexUsage.recentModel}</Text>
+                <Label>세션</Label>
+                <Text color="gray">{codexUsage.sessionCount}개</Text>
+                <Text color="gray"> {codexUsage.recentModel}</Text>
               </Box>
-              <Text color="gray" dimColor>  구독(plus) — 별도청구</Text>
-            </Box>
+            </>
           )}
-        </Box>
+        </>
       )}
 
       {/* ── Todo 섹션 ───────────────────────────────────────────────────── */}
       {(todo.total > 0 || todo.items.length > 0) && (
-        <Box flexDirection="column">
+        <>
           <Text bold color="gray">─ 작업</Text>
           <Box flexDirection="row" flexWrap="wrap">
-            <Text color="gray">  {todo.done}/{todo.total} </Text>
+            <Text color="gray">{todo.done}/{todo.total} </Text>
             <Text color="green">{doneMark} </Text>
             <Text color="cyan">{pendingItems}</Text>
           </Box>
-        </Box>
+        </>
       )}
     </Box>
   );

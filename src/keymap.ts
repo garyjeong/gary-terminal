@@ -54,6 +54,9 @@ export const KEYMAP_CONTEXTS: Record<KeyContext, ContextKeyEntry[]> = {
     { key: '/',           desc: '슬래시 자동완성 팝업',   action: 'slash' },
     { key: 'Esc',         desc: '패널 나가기',           action: 'exitPanel' },
     { key: '↑↓ (입력창)', desc: '패널 이동',            action: 'movePanelFromInput' },
+    { key: 'Ctrl+U',              desc: '입력창 전체 지우기 (kill-line)',  action: 'clearLine' },
+    { key: '↑ (비어있을 때)',     desc: '이전 메시지 히스토리',            action: 'historyUp' },
+    { key: '↓ (히스토리 탐색 중)', desc: '다음 메시지 / 초안 복원',         action: 'historyDown' },
   ],
   'active-agents': [
     { key: '↑↓',         desc: '에이전트 전환',         action: 'switchAgent' },
@@ -140,4 +143,6 @@ export const CHEATSHEET_ENTRIES = [
   { key: 'Tab / Enter (팝업)', desc: '명령어 선택' },
   { key: 'Esc (팝업)',        desc: '팝업 닫기' },
   { key: 'Ctrl+Y',            desc: 'Copy mode 진입/복귀 (텍스트 선택)' },
+  { key: 'Ctrl+U (입력창)',             desc: '입력창 전체 지우기 (kill-line)' },
+  { key: '↑↓ (입력창 비어있을 때)',     desc: '명령 히스토리 탐색 (최근 50개)' },
 ];

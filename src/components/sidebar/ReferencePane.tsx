@@ -173,7 +173,7 @@ export function ReferencePane(): React.ReactElement {
                         : 'red'
                   }
                 >
-                  {tc.status === 'running' ? '⏳' : tc.status === 'done' ? '✓' : '✗'}
+                  {tc.status === 'running' ? '●' : tc.status === 'done' ? '✓' : '✗'}
                 </Text>
                 <Text color="gray">
                   {' '}{String(tc.input['command'] ?? '').slice(0, 18)}

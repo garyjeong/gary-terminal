@@ -11,6 +11,10 @@ export function InputPane(): React.ReactElement {
   // Ref to track raw current value for @ completion (avoids stale closures)
   const currentValueRef = useRef('');
 
+  // Command history navigation
+  const historyIndexRef = useRef(-1); // -1 = not navigating, 0 = most recent
+  const draftRef = useRef('');        // saved draft before history navigation
+
   const focusRegion = useStore((state) => state.ui.focusRegion);
   const focusedAgentId = useStore((state) => state.focusedAgentId);
 
@@ -34,6 +38,11 @@ export function InputPane(): React.ReactElement {
   const isActive = isSelected && focusMode === 'active';
   const isFocused = isActive;
   const borderColor = !isSelected ? 'gray' : isActive ? 'cyan' : 'yellow';
+
+  // Input history actions
+  const addInputHistory = useStore((state) => state.addInputHistory);
+  const setInputIsEmpty = useStore((state) => state.setInputIsEmpty);
+  const setInputHistoryNavigating = useStore((state) => state.setInputHistoryNavigating);
 
   // Slash popup display
   const { filteredCommands, selectedIndex, open: popupOpen } = autocomplete;
@@ -78,6 +87,13 @@ export function InputPane(): React.ReactElement {
 
   function handleChange(value: string): void {
     currentValueRef.current = value;
+    setInputIsEmpty(value === '');
+
+    // Reset history navigation when user types
+    if (historyIndexRef.current !== -1) {
+      historyIndexRef.current = -1;
+      setInputHistoryNavigating(false);
+    }
 
     // ── Slash autocomplete: only when value starts with '/' ──
     if (value.startsWith('/')) {
@@ -141,6 +157,11 @@ export function InputPane(): React.ReactElement {
     const trimmed = text.trim();
     if (!trimmed) return;
 
+    // Add to command history + reset navigation state
+    addInputHistory(trimmed);
+    historyIndexRef.current = -1;
+    setInputHistoryNavigating(false);
+
     // Route local-handled slash commands
     if (trimmed === '/clear') {
       useStore.getState().dispatchOp(focusedAgentId, { type: 'clear' });
@@ -150,13 +171,15 @@ export function InputPane(): React.ReactElement {
       useStore.getState().dispatchOp(focusedAgentId, { type: 'submit', text: trimmed });
     }
 
+    currentValueRef.current = '';
+    setInputIsEmpty(true);
     setCompletionValue('');
     setInputKey((k) => k + 1);
   }
 
-  // Handle popup-specific keys and Esc
+  // Handle popup-specific keys, history navigation, Ctrl+U, and Esc
   useInput(
-    (_input, key) => {
+    (input, key) => {
       // File popup: ↑↓ navigate, Tab/Enter apply, Esc close
       if (filePopupOpen) {
         if (key.upArrow) { moveFileSelection(-1); return; }
@@ -173,6 +196,74 @@ export function InputPane(): React.ReactElement {
         if (key.escape) { closeSlashAutocomplete(); return; }
         if (key.tab) { applyCompletion(); return; }
         return; // swallow other keys while slash popup is open
+      }
+
+      // ── No popup open ────────────────────────────────────────────────────
+
+      // Ctrl+U: kill-line (clear entire input)
+      // Note: Cmd+Backspace is NOT reliably capturable in terminal apps — it
+      // depends on terminal emulator config and typically sends no sequence or
+      // is treated as Delete by macOS. Ctrl+U is the standard POSIX kill-line
+      // shortcut and is always captured correctly.
+      if (key.ctrl && input === 'u') {
+        currentValueRef.current = '';
+        setInputIsEmpty(true);
+        historyIndexRef.current = -1;
+        setInputHistoryNavigating(false);
+        setCompletionValue('');
+        setInputKey((k) => k + 1);
+        return;
+      }
+
+      // ↑: navigate to older history item (only when input is empty or already in history mode)
+      if (key.upArrow) {
+        const history = useStore.getState().inputHistory;
+        if (history.length === 0) return;
+        // If input has text and we're not already navigating history → let App.tsx bounce
+        if (historyIndexRef.current === -1 && currentValueRef.current !== '') {
+          return;
+        }
+        // Save draft on first navigation
+        if (historyIndexRef.current === -1) {
+          draftRef.current = currentValueRef.current;
+        }
+        const nextIdx = Math.min(historyIndexRef.current + 1, history.length - 1);
+        // Already at oldest item → no-op
+        if (nextIdx === historyIndexRef.current && historyIndexRef.current >= 0) {
+          return;
+        }
+        historyIndexRef.current = nextIdx;
+        const item = history[history.length - 1 - nextIdx] ?? '';
+        currentValueRef.current = item;
+        setInputIsEmpty(item === '');
+        setInputHistoryNavigating(true);
+        setCompletionValue(item);
+        setInputKey((k) => k + 1);
+        return;
+      }
+
+      // ↓: navigate to newer history item or restore draft
+      if (key.downArrow && historyIndexRef.current !== -1) {
+        const nextIdx = historyIndexRef.current - 1;
+        if (nextIdx < 0) {
+          // Restore draft
+          historyIndexRef.current = -1;
+          const draft = draftRef.current;
+          currentValueRef.current = draft;
+          setInputIsEmpty(draft === '');
+          setInputHistoryNavigating(false);
+          setCompletionValue(draft);
+          setInputKey((k) => k + 1);
+        } else {
+          historyIndexRef.current = nextIdx;
+          const history = useStore.getState().inputHistory;
+          const item = history[history.length - 1 - nextIdx] ?? '';
+          currentValueRef.current = item;
+          setInputIsEmpty(item === '');
+          setCompletionValue(item);
+          setInputKey((k) => k + 1);
+        }
+        return;
       }
 
       // No popup: Esc exits to select mode
