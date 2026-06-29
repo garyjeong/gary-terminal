@@ -1,62 +1,87 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { TextInput } from '@inkjs/ui';
 import { useStore } from '../store.js';
+import {
+  cpSplit,
+  cpLen,
+  cpInsert,
+  cpDeleteBefore,
+  isPrintableInput,
+  renderWithCursor,
+  renderPlaceholder,
+  ansiDim,
+  detectSlashTrigger,
+  detectFileTrigger,
+} from './inputUtils.js';
 
 const MAX_POPUP_ITEMS = 8;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// InputPane component
+//
+// Pure code-point / rendering / trigger-detection helpers live in
+// ./inputUtils.ts (unit-tested by scripts/test-input.ts).
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function InputPane(): React.ReactElement {
-  const [inputKey, setInputKey] = useState(0);
-  const [completionValue, setCompletionValue] = useState('');
-  // Ref to track raw current value for @ completion (avoids stale closures)
-  const currentValueRef = useRef('');
+  // ── Controlled input state ────────────────────────────────────────────────
+  // value / cursorOffset are the single source of truth for the input field.
+  // Both are also mirrored in refs so that useInput callbacks always see the
+  // *latest* values even when they fire before the next React render.
+  const [value, setValue] = useState('');
+  const [cursorOffset, setCursorOffset] = useState(0); // in code-point units
+  const valueRef       = useRef('');
+  const cursorRef      = useRef(0);
+  valueRef.current  = value;
+  cursorRef.current = cursorOffset;
 
   // Command history navigation
-  const historyIndexRef = useRef(-1); // -1 = not navigating, 0 = most recent
-  const draftRef = useRef('');        // saved draft before history navigation
+  const historyIndexRef = useRef(-1); // -1 = not navigating
+  const draftRef        = useRef(''); // saved draft before history navigation
 
-  const focusRegion = useStore((state) => state.ui.focusRegion);
+  // ── Store selectors ───────────────────────────────────────────────────────
+  const focusRegion    = useStore((state) => state.ui.focusRegion);
   const focusedAgentId = useStore((state) => state.focusedAgentId);
 
   // Slash autocomplete
-  const autocomplete = useStore((state) => state.slashAutocomplete);
-  const openSlashAutocomplete = useStore((state) => state.openSlashAutocomplete);
+  const autocomplete        = useStore((state) => state.slashAutocomplete);
+  const openSlashAutocomplete  = useStore((state) => state.openSlashAutocomplete);
   const closeSlashAutocomplete = useStore((state) => state.closeSlashAutocomplete);
-  const setSlashQuery = useStore((state) => state.setSlashQuery);
-  const moveSlashSelection = useStore((state) => state.moveSlashSelection);
+  const setSlashQuery          = useStore((state) => state.setSlashQuery);
+  const moveSlashSelection     = useStore((state) => state.moveSlashSelection);
 
   // File autocomplete
-  const fileAutocomplete = useStore((state) => state.fileAutocomplete);
-  const openFileAutocomplete = useStore((state) => state.openFileAutocomplete);
+  const fileAutocomplete    = useStore((state) => state.fileAutocomplete);
+  const openFileAutocomplete  = useStore((state) => state.openFileAutocomplete);
   const closeFileAutocomplete = useStore((state) => state.closeFileAutocomplete);
-  const setFileQuery = useStore((state) => state.setFileQuery);
-  const moveFileSelection = useStore((state) => state.moveFileSelection);
+  const setFileQuery           = useStore((state) => state.setFileQuery);
+  const moveFileSelection      = useStore((state) => state.moveFileSelection);
 
-  const focusMode = useStore((state) => state.ui.focusMode);
-  const modeStack = useStore((state) => state.ui.modeStack);
+  const focusMode  = useStore((state) => state.ui.focusMode);
+  const modeStack  = useStore((state) => state.ui.modeStack);
   const setFocusMode = useStore((state) => state.setFocusMode);
+
   const isSelected = focusRegion === 'input';
-  const isActive = isSelected && focusMode === 'active';
-  const isFocused = isActive;
+  const isActive   = isSelected && focusMode === 'active';
+  const isFocused  = isActive;
   const borderColor = !isSelected ? 'gray' : isActive ? 'cyan' : 'yellow';
 
-  // Blocking overlays disable the TextInput entirely so keystrokes don't leak through.
-  // slash/file popups are intentionally NOT blocking — the user must continue typing.
+  // Blocking overlays disable the input entirely
   const BLOCKING_MODES = ['resume', 'permission', 'newsession', 'cheatsheet', 'copy'] as const;
   const hasBlockingOverlay = modeStack.some((m) =>
     (BLOCKING_MODES as readonly string[]).includes(m),
   );
-  const textInputDisabled = !isActive || hasBlockingOverlay;
+  const inputDisabled = !isActive || hasBlockingOverlay;
 
   // Input history actions
-  const addInputHistory = useStore((state) => state.addInputHistory);
-  const setInputIsEmpty = useStore((state) => state.setInputIsEmpty);
+  const addInputHistory          = useStore((state) => state.addInputHistory);
+  const setInputIsEmpty          = useStore((state) => state.setInputIsEmpty);
   const setInputHistoryNavigating = useStore((state) => state.setInputHistoryNavigating);
 
   // Slash popup display
   const { filteredCommands, selectedIndex, open: popupOpen } = autocomplete;
   const displayItems = filteredCommands.slice(0, MAX_POPUP_ITEMS);
-  const remaining = filteredCommands.length - MAX_POPUP_ITEMS;
+  const remaining    = filteredCommands.length - MAX_POPUP_ITEMS;
 
   // File popup display
   const {
@@ -67,223 +92,320 @@ export function InputPane(): React.ReactElement {
     allFiles,
   } = fileAutocomplete;
   const fileDisplayItems = filteredFiles.slice(0, MAX_POPUP_ITEMS);
-  const fileRemaining = filteredFiles.length - MAX_POPUP_ITEMS;
+  const fileRemaining    = filteredFiles.length - MAX_POPUP_ITEMS;
 
-  // Apply slash completion
+  // ── Core state updater ────────────────────────────────────────────────────
+  /**
+   * Atomically update value + cursor.
+   * Refs are written BEFORE React state so that any synchronous code that
+   * follows (e.g., side-effect calls) sees the new values immediately.
+   */
+  const applyUpdate = useCallback(
+    (newVal: string, newCursor: number) => {
+      valueRef.current  = newVal;
+      cursorRef.current = newCursor;
+      setValue(newVal);
+      setCursorOffset(newCursor);
+    },
+    [],
+  );
+
+  // ── Value change side-effects (autocomplete / inputIsEmpty / history reset) ─
+  // This is the direct equivalent of the old handleChange(), but now called
+  // *synchronously* inside the useInput handler instead of via useEffect.
+  const handleValueChange = useCallback(
+    (newVal: string) => {
+      setInputIsEmpty(newVal === '');
+
+      // Reset history navigation whenever the user types
+      if (historyIndexRef.current !== -1) {
+        historyIndexRef.current = -1;
+        setInputHistoryNavigating(false);
+      }
+
+      // ── Slash autocomplete ──────────────────────────────────────────────
+      // Any '/'-prefixed value is handled by the slash branch and returns early
+      // (slash takes priority over the @ file picker).
+      if (newVal.startsWith('/')) {
+        const slash = detectSlashTrigger(newVal);
+        if (slash.active) {
+          setSlashQuery(slash.query);
+          if (!useStore.getState().slashAutocomplete.open) {
+            openSlashAutocomplete(slash.query);
+          }
+        } else {
+          if (useStore.getState().slashAutocomplete.open) closeSlashAutocomplete();
+        }
+        if (useStore.getState().fileAutocomplete.open) closeFileAutocomplete();
+        return;
+      }
+
+      if (useStore.getState().slashAutocomplete.open) closeSlashAutocomplete();
+
+      // ── @ file picker ───────────────────────────────────────────────────
+      const file = detectFileTrigger(newVal);
+      if (file.active) {
+        if (!useStore.getState().fileAutocomplete.open) {
+          openFileAutocomplete(file.query);
+        } else {
+          setFileQuery(file.query);
+        }
+        return;
+      }
+
+      if (useStore.getState().fileAutocomplete.open) closeFileAutocomplete();
+    },
+    [
+      setInputIsEmpty, setInputHistoryNavigating,
+      setSlashQuery, openSlashAutocomplete, closeSlashAutocomplete,
+      openFileAutocomplete, setFileQuery, closeFileAutocomplete,
+    ],
+  );
+
+  // ── Programmatic value injection (completions, history) ──────────────────
+  /**
+   * Inject a new value from outside (completion apply, history navigation).
+   * Does NOT fire the autocomplete side-effects (the caller has already done
+   * the bookkeeping for those).
+   */
+  const injectValue = useCallback(
+    (newVal: string) => {
+      applyUpdate(newVal, cpLen(newVal)); // cursor always goes to end on injection
+      setInputIsEmpty(newVal === '');
+    },
+    [applyUpdate, setInputIsEmpty],
+  );
+
+  // ── Completion handlers ───────────────────────────────────────────────────
   const applyCompletion = useCallback(() => {
     const ac = useStore.getState().slashAutocomplete;
     const cmd = ac.filteredCommands[ac.selectedIndex];
     if (!cmd) return;
     const newVal = `/${cmd.name} `;
-    setCompletionValue(newVal);
-    setInputKey((k) => k + 1);
+    injectValue(newVal);
     useStore.getState().closeSlashAutocomplete();
-  }, []);
+  }, [injectValue]);
 
-  // Apply file completion: replace @<query> with @<file>
   const applyFileCompletion = useCallback(() => {
     const fa = useStore.getState().fileAutocomplete;
     const file = fa.filteredFiles[fa.selectedIndex];
     if (!file) return;
-    const val = currentValueRef.current;
+    const val = valueRef.current;
     const lastAtIdx = val.lastIndexOf('@');
     const prefix = lastAtIdx >= 0 ? val.slice(0, lastAtIdx) : val;
     const newVal = `${prefix}@${file} `;
-    setCompletionValue(newVal);
-    setInputKey((k) => k + 1);
+    injectValue(newVal);
     useStore.getState().closeFileAutocomplete();
-  }, []);
+  }, [injectValue]);
 
-  function handleChange(value: string): void {
-    currentValueRef.current = value;
-    setInputIsEmpty(value === '');
+  // ── Submit handler ────────────────────────────────────────────────────────
+  const handleSubmit = useCallback(
+    (text: string) => {
+      if (useStore.getState().ui.focusMode === 'select') return;
 
-    // Reset history navigation when user types
-    if (historyIndexRef.current !== -1) {
-      historyIndexRef.current = -1;
-      setInputHistoryNavigating(false);
-    }
-
-    // ── Slash autocomplete: only when value starts with '/' ──
-    if (value.startsWith('/')) {
-      const afterSlash = value.slice(1);
-      if (!afterSlash.includes(' ')) {
-        setSlashQuery(afterSlash);
-        if (!useStore.getState().slashAutocomplete.open) openSlashAutocomplete(afterSlash);
-      } else {
-        if (useStore.getState().slashAutocomplete.open) closeSlashAutocomplete();
-      }
-      // Slash takes priority — close file picker if somehow open
-      if (useStore.getState().fileAutocomplete.open) closeFileAutocomplete();
-      return;
-    }
-
-    // Not starting with '/' — close slash autocomplete if open
-    if (useStore.getState().slashAutocomplete.open) closeSlashAutocomplete();
-
-    // ── @ file picker: detect last '@' without subsequent space ──
-    const lastAtIdx = value.lastIndexOf('@');
-    if (lastAtIdx !== -1) {
-      const afterAt = value.slice(lastAtIdx + 1);
-      if (!afterAt.includes(' ')) {
-        const query = afterAt;
-        if (!useStore.getState().fileAutocomplete.open) {
-          openFileAutocomplete(query);
-        } else {
-          setFileQuery(query);
-        }
+      // File autocomplete active → apply completion
+      const fa = useStore.getState().fileAutocomplete;
+      if (fa.open && fa.filteredFiles.length > 0) {
+        applyFileCompletion();
         return;
       }
-    }
 
-    // No active trigger — close file picker if open
-    if (useStore.getState().fileAutocomplete.open) closeFileAutocomplete();
-  }
-
-  function handleSubmit(text: string): void {
-    if (useStore.getState().ui.focusMode === 'select') return;
-
-    // File autocomplete active → apply completion instead of sending
-    const fa = useStore.getState().fileAutocomplete;
-    if (fa.open && fa.filteredFiles.length > 0) {
-      applyFileCompletion();
-      return;
-    }
-
-    // Slash autocomplete active → apply completion instead of sending
-    const ac = useStore.getState().slashAutocomplete;
-    if (ac.open && ac.filteredCommands.length > 0) {
-      const cmd = ac.filteredCommands[ac.selectedIndex];
-      if (cmd) {
-        const newVal = `/${cmd.name} `;
-        setCompletionValue(newVal);
-        setInputKey((k) => k + 1);
-        useStore.getState().closeSlashAutocomplete();
+      // Slash autocomplete active → apply completion
+      const ac = useStore.getState().slashAutocomplete;
+      if (ac.open && ac.filteredCommands.length > 0) {
+        applyCompletion();
+        return;
       }
-      return;
-    }
 
-    const trimmed = text.trim();
-    if (!trimmed) return;
+      const trimmed = text.trim();
+      if (!trimmed) return;
 
-    // Add to command history + reset navigation state
-    addInputHistory(trimmed);
-    historyIndexRef.current = -1;
-    setInputHistoryNavigating(false);
+      addInputHistory(trimmed);
+      historyIndexRef.current = -1;
+      setInputHistoryNavigating(false);
 
-    // Route local-handled slash commands
-    if (trimmed === '/clear') {
-      useStore.getState().dispatchOp(focusedAgentId, { type: 'clear' });
-    } else if (trimmed.startsWith('/compact')) {
-      useStore.getState().dispatchOp(focusedAgentId, { type: 'compact' });
-    } else {
-      useStore.getState().dispatchOp(focusedAgentId, { type: 'submit', text: trimmed });
-    }
+      if (trimmed === '/clear') {
+        useStore.getState().dispatchOp(focusedAgentId, { type: 'clear' });
+      } else if (trimmed.startsWith('/compact')) {
+        useStore.getState().dispatchOp(focusedAgentId, { type: 'compact' });
+      } else {
+        useStore.getState().dispatchOp(focusedAgentId, { type: 'submit', text: trimmed });
+      }
 
-    currentValueRef.current = '';
-    setInputIsEmpty(true);
-    setCompletionValue('');
-    setInputKey((k) => k + 1);
-  }
+      applyUpdate('', 0);
+      setInputIsEmpty(true);
+    },
+    [
+      applyCompletion, applyFileCompletion, addInputHistory,
+      setInputHistoryNavigating, focusedAgentId, applyUpdate, setInputIsEmpty,
+    ],
+  );
 
-  // Handle popup-specific keys, history navigation, Ctrl+U, and Esc
+  // ── Single unified useInput handler ──────────────────────────────────────
+  //
+  // Priority order (top = highest):
+  //   1. File popup navigation (↑↓/Esc/Tab/Enter)
+  //   2. Slash popup navigation (↑↓/Esc/Tab/Enter)
+  //   3. Ctrl+U — kill line
+  //   4. ↑↓ history (only when no popup open)
+  //   5. Esc — exit to select mode (no popup)
+  //   6. Enter — submit (no popup)
+  //   7. ←/→ — cursor movement
+  //   8. Backspace/Delete — code-point–aware deletion
+  //   9. Printable character input (ASCII, Korean, emoji…)
+  //
+  // Korean input: ink's stdin.setEncoding('utf8') ensures that UTF-8 multibyte
+  // sequences are buffered in Node's StringDecoder and delivered as complete
+  // code-point strings. We still filter on codePoint >= 0x20 to discard any
+  // control bytes that might slip through (e.g., 0x0D/Enter arriving as '\r').
   useInput(
     (input, key) => {
-      // File popup: ↑↓ navigate, Tab/Enter apply, Esc close
+      // ── 1. File popup navigation ─────────────────────────────────────────
       if (filePopupOpen) {
-        if (key.upArrow) { moveFileSelection(-1); return; }
-        if (key.downArrow) { moveFileSelection(1); return; }
-        if (key.escape) { closeFileAutocomplete(); return; }
-        if (key.tab) { applyFileCompletion(); return; }
-        return; // swallow other keys while file popup is open
+        if (key.upArrow)             { moveFileSelection(-1);    return; }
+        if (key.downArrow)           { moveFileSelection(1);     return; }
+        if (key.escape)              { closeFileAutocomplete();  return; }
+        if (key.tab || key.return)   { applyFileCompletion();   return; }
+        // Other keys (including Korean chars) fall through to char insertion
+        // below, which updates the value and re-filters the file list.
       }
 
-      // Slash popup: ↑↓ navigate, Tab apply, Esc close
+      // ── 2. Slash popup navigation ─────────────────────────────────────────
       if (popupOpen) {
-        if (key.upArrow) { moveSlashSelection(-1); return; }
-        if (key.downArrow) { moveSlashSelection(1); return; }
-        if (key.escape) { closeSlashAutocomplete(); return; }
-        if (key.tab) { applyCompletion(); return; }
-        return; // swallow other keys while slash popup is open
+        if (key.upArrow)             { moveSlashSelection(-1);    return; }
+        if (key.downArrow)           { moveSlashSelection(1);     return; }
+        if (key.escape)              { closeSlashAutocomplete();  return; }
+        if (key.tab || key.return)   { applyCompletion();         return; }
+        // Other keys fall through.
       }
 
-      // ── No popup open ────────────────────────────────────────────────────
-
-      // Ctrl+U: kill-line (clear entire input)
-      // Note: Cmd+Backspace is NOT reliably capturable in terminal apps — it
-      // depends on terminal emulator config and typically sends no sequence or
-      // is treated as Delete by macOS. Ctrl+U is the standard POSIX kill-line
-      // shortcut and is always captured correctly.
+      // ── 3. Ctrl+U: kill line ─────────────────────────────────────────────
       if (key.ctrl && input === 'u') {
-        currentValueRef.current = '';
+        applyUpdate('', 0);
         setInputIsEmpty(true);
         historyIndexRef.current = -1;
         setInputHistoryNavigating(false);
-        setCompletionValue('');
-        setInputKey((k) => k + 1);
+        if (useStore.getState().slashAutocomplete.open) closeSlashAutocomplete();
+        if (useStore.getState().fileAutocomplete.open)  closeFileAutocomplete();
         return;
       }
 
-      // ↑: navigate to older history item (only when input is empty or already in history mode)
-      if (key.upArrow) {
+      // ── 4. ↑: navigate to older history item ─────────────────────────────
+      if (key.upArrow && !filePopupOpen && !popupOpen) {
         const history = useStore.getState().inputHistory;
         if (history.length === 0) return;
-        // If input has text and we're not already navigating history → let App.tsx bounce
-        if (historyIndexRef.current === -1 && currentValueRef.current !== '') {
-          return;
-        }
+        // If input has text and we're not already in history mode, do nothing
+        if (historyIndexRef.current === -1 && valueRef.current !== '') return;
         // Save draft on first navigation
         if (historyIndexRef.current === -1) {
-          draftRef.current = currentValueRef.current;
+          draftRef.current = valueRef.current;
         }
         const nextIdx = Math.min(historyIndexRef.current + 1, history.length - 1);
-        // Already at oldest item → no-op
-        if (nextIdx === historyIndexRef.current && historyIndexRef.current >= 0) {
-          return;
-        }
+        if (nextIdx === historyIndexRef.current && historyIndexRef.current >= 0) return;
         historyIndexRef.current = nextIdx;
         const item = history[history.length - 1 - nextIdx] ?? '';
-        currentValueRef.current = item;
-        setInputIsEmpty(item === '');
         setInputHistoryNavigating(true);
-        setCompletionValue(item);
-        setInputKey((k) => k + 1);
+        injectValue(item);
         return;
       }
 
-      // ↓: navigate to newer history item or restore draft
-      if (key.downArrow && historyIndexRef.current !== -1) {
+      // ── ↓: navigate to newer history item or restore draft ───────────────
+      if (key.downArrow && !filePopupOpen && !popupOpen && historyIndexRef.current !== -1) {
         const nextIdx = historyIndexRef.current - 1;
         if (nextIdx < 0) {
-          // Restore draft
           historyIndexRef.current = -1;
-          const draft = draftRef.current;
-          currentValueRef.current = draft;
-          setInputIsEmpty(draft === '');
           setInputHistoryNavigating(false);
-          setCompletionValue(draft);
-          setInputKey((k) => k + 1);
+          injectValue(draftRef.current);
         } else {
           historyIndexRef.current = nextIdx;
           const history = useStore.getState().inputHistory;
           const item = history[history.length - 1 - nextIdx] ?? '';
-          currentValueRef.current = item;
-          setInputIsEmpty(item === '');
-          setCompletionValue(item);
-          setInputKey((k) => k + 1);
+          injectValue(item);
         }
         return;
       }
 
-      // No popup: Esc exits to select mode
-      if (key.escape) {
+      // ── 5. Esc: exit to select mode (when no popup is open) ──────────────
+      if (key.escape && !filePopupOpen && !popupOpen) {
         setFocusMode('select');
+        return;
+      }
+
+      // ── 6. Enter: submit (when no popup is handling Enter above) ─────────
+      if (key.return && !filePopupOpen && !popupOpen) {
+        handleSubmit(valueRef.current);
+        return;
+      }
+
+      // ── 7. ←/→: cursor movement ───────────────────────────────────────────
+      if (key.leftArrow) {
+        const newCursor = Math.max(0, cursorRef.current - 1);
+        cursorRef.current = newCursor;
+        setCursorOffset(newCursor);
+        return;
+      }
+      if (key.rightArrow) {
+        const maxCursor = cpLen(valueRef.current);
+        const newCursor = Math.min(maxCursor, cursorRef.current + 1);
+        cursorRef.current = newCursor;
+        setCursorOffset(newCursor);
+        return;
+      }
+
+      // ── 8. Backspace/Delete: code-point–aware deletion ────────────────────
+      if (key.backspace || key.delete) {
+        const [newVal, newCursor] = cpDeleteBefore(valueRef.current, cursorRef.current);
+        if (newVal !== valueRef.current) {
+          applyUpdate(newVal, newCursor);
+          handleValueChange(newVal);
+        }
+        return;
+      }
+
+      // ── 9. Printable character input (ASCII, Korean, emoji, …) ───────────
+      // Filter out:
+      //   - Empty input (special keys already handled above)
+      //   - Ctrl / Meta sequences
+      //   - Control characters (< U+0020, e.g. '\r', '\t', '\x1b')
+      //
+      // Korean: ink's StringDecoder delivers '안' (1 code-point string) as a
+      // single 'input' value — no byte splitting at this layer.
+      if (
+        input &&
+        !key.ctrl &&
+        !key.meta &&
+        isPrintableInput(input)
+      ) {
+        const inputCodePoints = cpSplit(input); // handles multi-char pastes & emoji
+        const newVal    = cpInsert(valueRef.current, cursorRef.current, inputCodePoints);
+        const newCursor = cursorRef.current + inputCodePoints.length;
+        applyUpdate(newVal, newCursor);
+        handleValueChange(newVal);
         return;
       }
     },
     { isActive: isFocused },
   );
 
+  // ── Rendered input value ──────────────────────────────────────────────────
+  const PLACEHOLDER = '메시지를 입력하세요...';
+
+  const renderedInput = useMemo(() => {
+    if (inputDisabled) {
+      // Disabled: show plain text or dimmed placeholder
+      return value || ansiDim(PLACEHOLDER);
+    }
+    if (!value) {
+      // Active, empty: placeholder with cursor on first char
+      return renderPlaceholder(PLACEHOLDER);
+    }
+    // Active, has text: render with block cursor
+    return renderWithCursor(value, cursorOffset);
+  }, [value, cursorOffset, inputDisabled]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render
+  // ─────────────────────────────────────────────────────────────────────────
   return (
     <Box flexDirection="column">
       {/* File autocomplete popup */}
@@ -325,7 +447,7 @@ export function InputPane(): React.ReactElement {
             const isItemSelected = i === selectedIndex;
             const label = cmd.argumentHint ? `/${cmd.name} ${cmd.argumentHint}` : `/${cmd.name}`;
             const badge =
-              cmd.type === 'skill' ? ' [Skill]' :
+              cmd.type === 'skill'  ? ' [Skill]'  :
               cmd.type === 'plugin' ? ' [Plugin]' :
               cmd.type === 'custom' ? ' [Custom]' : '';
             return (
@@ -344,6 +466,7 @@ export function InputPane(): React.ReactElement {
         </Box>
       )}
 
+      {/* Input field */}
       <Box
         borderStyle="single"
         borderColor={borderColor}
@@ -352,14 +475,7 @@ export function InputPane(): React.ReactElement {
       >
         <Text color="cyan">{'> '}</Text>
         <Box flexGrow={1}>
-          <TextInput
-            key={inputKey}
-            defaultValue={completionValue}
-            onChange={handleChange}
-            onSubmit={handleSubmit}
-            placeholder="메시지를 입력하세요..."
-            isDisabled={textInputDisabled}
-          />
+          <Text>{renderedInput}</Text>
         </Box>
       </Box>
     </Box>
