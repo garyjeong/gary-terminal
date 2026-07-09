@@ -11,6 +11,7 @@ from textual.widgets import Button, Footer, Header, Input, Label, Static
 from ..config import Config
 from ..engine import (
     Agent,
+    AttachmentEvent,
     EngineError,
     MessageDone,
     TokenEvent,
@@ -22,9 +23,11 @@ HELP_TEXT = """[b]명령어[/b]
   /help            이 도움말
   /models          설치된 Ollama 모델 목록
   /model <name>    사용 모델 변경 (인자 없으면 현재 모델)
+  /reload          프로젝트 컨텍스트(AGENTS.md) 재로드
   /clear           대화 초기화
   /quit            종료
 [b]도구[/b] read_file · list_dir (자동) · write_file · run_shell (승인 필요)
+[b]첨부[/b] 메시지에 @경로/파일.py 를 쓰면 그 파일 내용을 프롬프트에 포함
 [dim]그 외 입력은 모델에게 전송됩니다.[/dim]"""
 
 
@@ -111,7 +114,7 @@ class GaryTerminalApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         yield VerticalScroll(id="conversation")
-        yield Input(placeholder="메시지 입력 후 Enter … (/help)", id="prompt")
+        yield Input(placeholder="메시지 입력 후 Enter … (/help · @파일 첨부)", id="prompt")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -121,6 +124,8 @@ class GaryTerminalApp(App):
             "system",
             markup=True,
         )
+        if self.agent.project_name:
+            self._add(f"📁 프로젝트 컨텍스트 로드: {self.agent.project_name}", "tool")
         self.query_one("#prompt", Input).focus()
 
     def _add(self, text: str, role: str, markup: bool = False) -> Message:
@@ -165,6 +170,10 @@ class GaryTerminalApp(App):
             self._add(HELP_TEXT, "system", markup=True)
         elif cmd == "clear":
             self.action_clear()
+        elif cmd == "reload":
+            name = self.agent.reload_context()
+            msg = f"컨텍스트 재로드: {name}" if name else "프로젝트 컨텍스트 파일 없음 (AGENTS.md)"
+            self._add(msg, "system", markup=True)
         elif cmd == "models":
             await self._show_models()
         elif cmd == "model":
@@ -201,6 +210,11 @@ class GaryTerminalApp(App):
                         current = self._add("", "assistant")
                     current.add_delta(ev.text)
                     self._scroll_end()
+                elif isinstance(ev, AttachmentEvent):
+                    for p in ev.attached:
+                        self._add(f"📎 첨부: {p}", "tool")
+                    for p in ev.missing:
+                        self._add(f"⚠️ 파일 없음: {p}", "tool")
                 elif isinstance(ev, ToolCallEvent):
                     current = None
                     self._add(f"🔧 {ev.summary}", "tool")

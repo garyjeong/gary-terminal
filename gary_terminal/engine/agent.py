@@ -4,7 +4,9 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from ..config import Config
+from .context import expand_mentions, load_project_context
 from .events import (
+    AttachmentEvent,
     EngineError,
     Event,
     MessageDone,
@@ -31,10 +33,15 @@ class Agent:
         self._client = OllamaClient(config.ollama_host)
         self._history: list[dict] = []
         self._approver = approver
+        self._project = load_project_context()
 
     @property
     def model(self) -> str:
         return self.config.model
+
+    @property
+    def project_name(self) -> str | None:
+        return self._project[0] if self._project else None
 
     def set_model(self, name: str) -> None:
         self.config.model = name
@@ -42,11 +49,18 @@ class Agent:
     def reset(self) -> None:
         self._history.clear()
 
+    def reload_context(self) -> str | None:
+        self._project = load_project_context()
+        return self.project_name
+
     async def list_models(self) -> list[str]:
         return await self._client.list_models()
 
     def _messages(self) -> list[dict]:
         system = self.config.system_prompt + "\n\n" + tools_protocol_text()
+        if self._project:
+            name, content = self._project
+            system += f"\n\n프로젝트 컨텍스트 ({name}):\n{content}"
         return [{"role": "system", "content": system}, *self._history]
 
     @staticmethod
@@ -62,13 +76,16 @@ class Agent:
             return True
         if stripped.startswith("```"):
             if "\n" not in stripped:
-                return None  # 펜스 언어가 아직 안 옴 → 보류
+                return None
             lang = stripped[3 : stripped.index("\n")].strip().lower()
             return lang == "json"
         return False
 
     async def send(self, user_text: str) -> AsyncIterator[Event]:
-        self._history.append({"role": "user", "content": user_text})
+        expanded, attached, missing = expand_mentions(user_text)
+        if attached or missing:
+            yield AttachmentEvent(attached, missing)
+        self._history.append({"role": "user", "content": expanded})
         for _ in range(MAX_STEPS):
             buffer = ""
             candidate: bool | None = None
@@ -95,7 +112,6 @@ class Agent:
                 yield EngineError(str(exc))
                 return
 
-            # 스트림이 끝났는데 판단 보류였던 짧은 버퍼는 텍스트로 흘림
             if candidate is None and not native and buffer:
                 yield TokenEvent(buffer)
                 candidate = False
@@ -104,7 +120,7 @@ class Agent:
 
             if not calls:
                 if candidate and not native:
-                    yield TokenEvent(buffer)  # 툴콜로 보였으나 아님 → 텍스트로 노출
+                    yield TokenEvent(buffer)
                 self._history.append({"role": "assistant", "content": buffer})
                 yield MessageDone(buffer)
                 return

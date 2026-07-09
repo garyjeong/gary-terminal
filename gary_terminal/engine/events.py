@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -8,6 +8,14 @@ class TokenEvent:
     """스트리밍 도중 도착한 부분 텍스트."""
 
     text: str
+
+
+@dataclass(frozen=True)
+class AttachmentEvent:
+    """@파일 멘션 처리 결과."""
+
+    attached: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -41,4 +49,11 @@ class EngineError:
     message: str
 
 
-Event = TokenEvent | ToolCallEvent | ToolResultEvent | MessageDone | EngineError
+Event = (
+    TokenEvent
+    | AttachmentEvent
+    | ToolCallEvent
+    | ToolResultEvent
+    | MessageDone
+    | EngineError
+)

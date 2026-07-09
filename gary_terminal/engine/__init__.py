@@ -1,5 +1,6 @@
 from .agent import Agent
 from .events import (
+    AttachmentEvent,
     EngineError,
     Event,
     MessageDone,
@@ -10,6 +11,7 @@ from .events import (
 
 __all__ = [
     "Agent",
+    "AttachmentEvent",
     "EngineError",
     "Event",
     "MessageDone",
