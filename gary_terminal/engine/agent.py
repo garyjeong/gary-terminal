@@ -23,6 +23,7 @@ from .events import (
     ToolResultEvent,
 )
 from .mcp_client import build_mcp_tools
+from .lsp import LspClient, detect_python_server, find_symbol_pos
 from .rag import RagIndex
 from .ollama_client import OllamaClient, OllamaError
 from .tools import Tool, ToolResult, make_protocol, make_specs, new_registry, parse_tool_call
@@ -62,11 +63,14 @@ class Agent:
         self._spawn_result: str = ""
         self._embed_client = OllamaClient(config.ollama_host)
         self._rag: RagIndex | None = None
+        self._lsp: LspClient | None = None
         self._tools = new_registry()
         if allow_meta_tools:
             self._tools["spawn_agents"] = self._make_spawn_tool()
             self._tools["update_plan"] = self._make_plan_tool()
             self._tools["codebase_search"] = self._make_search_tool()
+            self._tools["lsp_definition"] = self._make_lsp_tool("definition")
+            self._tools["lsp_references"] = self._make_lsp_tool("references")
             self._rag = RagIndex(Path.cwd(), self._embed_texts)
         self._rebuild()
 
@@ -205,6 +209,67 @@ class Agent:
             False, run,
             lambda a: f"의미검색: {a.get('query')}",
             lambda a: f"codebase_search({str(a.get('query', ''))[:30]})",
+        )
+
+    # --- LSP(정의/참조) ---
+    async def _ensure_lsp(self) -> LspClient | None:
+        if self._lsp is None:
+            cmd = detect_python_server()
+            if cmd is None:
+                return None
+            self._lsp = LspClient(cmd, Path.cwd())
+        try:
+            await self._lsp.start()
+        except Exception:  # noqa: BLE001
+            return None
+        return self._lsp
+
+    def _make_lsp_tool(self, kind: str) -> Tool:
+        async def run(args: dict) -> ToolResult:
+            file = str(args.get("file", ""))
+            name = str(args.get("name", ""))
+            if not file or not name:
+                return ToolResult(False, "file/name 누락", "인자 누락")
+            if not file.endswith(".py"):
+                return ToolResult(False, "현재 파이썬(.py)만 지원합니다.", "미지원")
+            if not Path(file).is_file():
+                return ToolResult(False, f"파일 없음: {file}", "없음")
+            cli = await self._ensure_lsp()
+            if cli is None:
+                return ToolResult(
+                    False,
+                    "파이썬 언어 서버가 없습니다. `pip install python-lsp-server` 또는 pyright 설치.",
+                    "서버 없음",
+                )
+            pos = find_symbol_pos(file, name)
+            if pos is None:
+                return ToolResult(False, f"'{name}' 위치를 찾지 못했습니다.", "위치 없음")
+            line, col = pos
+            try:
+                if kind == "definition":
+                    locs = await cli.definition(file, line, col)
+                else:
+                    locs = await cli.references(file, line, col)
+            except Exception as exc:  # noqa: BLE001
+                return ToolResult(False, f"LSP 오류: {exc}", "오류")
+            if not locs:
+                return ToolResult(True, "(결과 없음)", f"{name} (0건)")
+            body = "\n".join(f"{loc['file']}:{loc['line']}" for loc in locs)
+            return ToolResult(True, body, f"{name} ({len(locs)}건)")
+
+        desc = (
+            "Find where a symbol is defined (LSP, precise)."
+            if kind == "definition"
+            else "Find all references to a symbol (LSP, precise)."
+        )
+        return Tool(
+            f"lsp_{kind}", desc,
+            {"type": "object",
+             "properties": {"file": {"type": "string"}, "name": {"type": "string"}},
+             "required": ["file", "name"]},
+            False, run,
+            lambda a, _k=kind: f"lsp {_k}: {a.get('name')}",
+            lambda a, _k=kind: f"lsp_{_k}({a.get('name')})",
         )
 
     # --- 서브에이전트(병렬) ---

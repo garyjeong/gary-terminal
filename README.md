@@ -12,6 +12,7 @@
 - 코드 도구 — `search_code`(grep) · `run_tests`(승인) · `diagnostics`(린터/타입체크)
 - 에이전트 — 자동 에스컬레이션(로컬 실패→Claude) · `spawn_agents`(병렬 서브에이전트, 진행 표시·쓰기위임 옵션) · `update_plan`(계획/TODO)
 - 의미검색(RAG) — `/index`로 색인 후 `codebase_search`(nomic-embed-text). 캐시는 `~/.cache/gary-terminal/index/`
+- LSP(정밀) — `lsp_definition`·`lsp_references` (Python, 언어서버 자동감지)
 - MCP — `~/.config/gary-terminal/mcp.json` 서버 연결(예: Obsidian). 읽기 자동·쓰기 승인
 - 마크다운/코드 syntax 렌더링
 - 코드베이스 인식 — `AGENTS.md` 자동 로드 + `@파일` 첨부
@@ -63,3 +64,7 @@
 임베딩 모델 준비: `ollama pull nomic-embed-text`. 앱에서 `/index`로 코드베이스 색인(증분) 후,
 모델이 `codebase_search`로 의미 기반 검색. 한글 질의는 문서에, 코드 식별자 검색은 영어 질의가 유리
 (다국어 강화가 필요하면 `embed_model = "bge-m3"`).
+
+## LSP (정의·참조)
+정밀한 "정의로 이동/참조 찾기"를 쓰려면 파이썬 언어 서버 설치: `pip install python-lsp-server` (또는 pyright).
+설치되면 `lsp_definition`·`lsp_references` 도구를 모델이 사용(현재 Python). 없으면 안내 후 무시.

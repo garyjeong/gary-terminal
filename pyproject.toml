@@ -31,3 +31,8 @@ packages = ["gary_terminal"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "python-lsp-server>=1.14.0",
+]
