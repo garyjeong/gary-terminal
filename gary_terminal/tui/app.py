@@ -10,7 +10,7 @@ from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, Input, Label, Static
+from textual.widgets import Button, Footer, Header, Input, Label, Static, TextArea
 
 from ..config import Config
 from ..engine import (
@@ -63,20 +63,60 @@ class Message(Static):
             self.update(RichMarkdown(self._buffer))
 
 
-class PromptInput(Input):
-    """Tab 자동완성 입력창."""
+class PromptArea(TextArea):
+    """멀티라인 프롬프트 입력.
 
-    def on_key(self, event: events.Key) -> None:
-        if event.key == "tab":
-            event.prevent_default()
-            event.stop()
-            new, cands = compute_completions(self.value)
-            if new != self.value:
-                self.value = new
-                self.cursor_position = len(self.value)
-            show = getattr(self.app, "_show_completions", None)
-            if show:
-                show(cands)
+    Enter=제출 · Shift+Enter/Ctrl+J=줄바꿈 · Tab=자동완성 · Ctrl+C/Ctrl+D=종료 · Esc=중단
+    """
+
+    async def _on_key(self, event: events.Key) -> None:
+        key = event.key
+        if key == "enter":
+            event.prevent_default(); event.stop()
+            text = self.text
+            self.text = ""
+            await self.app._submit_prompt(text)
+            return
+        if key in ("shift+enter", "ctrl+j"):
+            event.prevent_default(); event.stop()
+            self.insert("\n")
+            self._suggest()
+            return
+        if key == "tab":
+            event.prevent_default(); event.stop()
+            self._autocomplete()
+            return
+        if key in ("ctrl+c", "ctrl+d"):
+            event.prevent_default(); event.stop()
+            self.app.exit()
+            return
+        if key == "escape":
+            event.prevent_default(); event.stop()
+            self.app.action_cancel()
+            return
+        await super()._on_key(event)
+        self._suggest()
+
+    def _line_prefix(self) -> tuple[str, int, int]:
+        row, col = self.cursor_location
+        line = self.document.get_line(row)
+        return line[:col], row, col
+
+    def _autocomplete(self) -> None:
+        prefix, row, col = self._line_prefix()
+        new, cands = compute_completions(prefix)
+        if new != prefix:
+            self.replace(new, (row, 0), (row, col))
+            self.move_cursor((row, len(new)))
+        show = getattr(self.app, "_show_completions", None)
+        if show:
+            show(cands)
+
+    def _suggest(self) -> None:
+        prefix, _, _ = self._line_prefix()
+        show = getattr(self.app, "_show_completions", None)
+        if show:
+            show(list_suggestions(prefix))
 
 
 class ApprovalScreen(ModalScreen[str]):
@@ -121,6 +161,7 @@ class GaryTerminalApp(App):
         ("ctrl+l", "clear", "초기화"),
         ("escape", "cancel", "중단"),
         ("ctrl+c", "quit", "종료"),
+        ("ctrl+d", "quit", "종료"),
     ]
 
     def __init__(self) -> None:
@@ -138,7 +179,7 @@ class GaryTerminalApp(App):
         yield Header()
         yield VerticalScroll(id="conversation")
         yield Static("", id="hint")
-        yield PromptInput(placeholder="메시지 입력 후 Enter … (/help · @파일 · Tab)", id="prompt")
+        yield PromptArea(id="prompt", soft_wrap=True, show_line_numbers=False, compact=True, placeholder="메시지 · Enter 전송 · Shift+Enter 줄바꿈 · Tab 완성 · /help")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -150,7 +191,7 @@ class GaryTerminalApp(App):
         )
         if self.agent.project_name:
             self._add(f"📁 프로젝트 컨텍스트 로드: {self.agent.project_name}", "tool")
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", TextArea).focus()
         self._load_mcp()
 
     def _add(self, text: str, role: str, markup: bool = False) -> Message:
@@ -166,8 +207,6 @@ class GaryTerminalApp(App):
         hint = self.query_one("#hint", Static)
         hint.update(Text("  ".join(cands)) if cands else Text(""))
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        self._show_completions(list_suggestions(event.value))
 
     def _status_text(self) -> str:
         a = self.agent
@@ -185,10 +224,9 @@ class GaryTerminalApp(App):
             return True
         return result == "approve"
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def _submit_prompt(self, raw: str) -> None:
         self.query_one("#hint", Static).update(Text(""))
-        text = event.value.strip()
-        event.input.value = ""
+        text = raw.strip()
         if not text:
             return
         if text.startswith("/"):
@@ -389,6 +427,9 @@ class GaryTerminalApp(App):
             self._streaming = False
             self._save_session()
             self._update_status()
+
+    def action_quit(self) -> None:
+        self.exit()
 
     def action_clear(self) -> None:
         self.agent.reset()

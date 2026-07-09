@@ -18,6 +18,8 @@ Screen {
 #prompt {
     margin: 0 1 1 1;
     border: round $accent;
+    height: auto;
+    max-height: 12;
 }
 
 .msg {
