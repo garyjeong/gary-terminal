@@ -1,0 +1,78 @@
+Screen {
+    background: $surface;
+}
+
+#conversation {
+    height: 1fr;
+    padding: 1 2;
+}
+
+#prompt {
+    margin: 0 1 1 1;
+    border: round $accent;
+}
+
+.msg {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    width: 100%;
+}
+
+.msg.user {
+    border-left: thick $accent;
+}
+
+.msg.assistant {
+    border-left: thick $success;
+}
+
+.msg.tool {
+    color: $accent;
+    text-style: italic;
+    border-left: thick $accent;
+}
+
+.msg.system {
+    text-style: italic;
+}
+
+.msg.error {
+    color: $error;
+    border-left: thick $error;
+}
+
+ApprovalScreen {
+    align: center middle;
+}
+
+#dialog {
+    width: 80%;
+    max-width: 100;
+    height: auto;
+    max-height: 80%;
+    padding: 1 2;
+    background: $panel;
+    border: thick $warning;
+}
+
+#dialog > Label {
+    margin-bottom: 1;
+    text-style: bold;
+}
+
+#detail {
+    max-height: 20;
+    overflow-y: auto;
+    padding: 1;
+    background: $surface;
+    margin-bottom: 1;
+}
+
+#buttons {
+    height: auto;
+    align: center middle;
+}
+
+#buttons Button {
+    margin: 0 1;
+}
