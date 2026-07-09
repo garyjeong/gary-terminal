@@ -30,6 +30,7 @@ class Config:
     theme: str | None = None
     auto_escalate: bool = False
     escalate_to: str = "claude"
+    subagent_write: bool = False
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     @classmethod
@@ -67,5 +68,6 @@ class Config:
             theme=pick("theme", None) or None,
             auto_escalate=pick("auto_escalate", False, as_bool),
             escalate_to=pick("escalate_to", "claude"),
+            subagent_write=pick("subagent_write", False, as_bool),
             system_prompt=pick("system_prompt", DEFAULT_SYSTEM_PROMPT),
         )

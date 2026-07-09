@@ -44,6 +44,17 @@ class EscalateEvent:
 
 
 @dataclass(frozen=True)
+class SubagentEvent:
+    """서브에이전트 진행 상황."""
+
+    index: int
+    total: int
+    task: str
+    status: str  # start | done | error
+    summary: str
+
+
+@dataclass(frozen=True)
 class PlanEvent:
     """계획/TODO 갱신."""
 
@@ -65,6 +76,7 @@ Event = (
     | AttachmentEvent
     | CompactEvent
     | EscalateEvent
+    | SubagentEvent
     | PlanEvent
     | ToolCallEvent
     | ToolResultEvent

@@ -15,6 +15,7 @@ from .events import (
     Event,
     MessageDone,
     PlanEvent,
+    SubagentEvent,
     TokenEvent,
     ToolCallEvent,
     ToolResultEvent,
@@ -55,6 +56,7 @@ class Agent:
         self._project = load_project_context()
         self.usage = UsageTracker()
         self.plan: list[dict] = []
+        self._spawn_result: str = ""
         self._tools = new_registry()
         if allow_meta_tools:
             self._tools["spawn_agents"] = self._make_spawn_tool()
@@ -182,8 +184,35 @@ class Agent:
             lambda a: f"spawn_agents({len(a.get('tasks', []))})",
         )
 
+    def _subagent_approver(self) -> Approver | None:
+        return self._approver if self.config.subagent_write else None
+
+    async def _run_indexed(self, i: int, task: str) -> tuple[int, str]:
+        return i, await self._run_subagent(task)
+
+    async def _spawn_stream(self, args: dict) -> AsyncIterator[Event]:
+        tasks = args.get("tasks") or []
+        if isinstance(tasks, str):
+            tasks = [tasks]
+        tasks = [str(t) for t in tasks if str(t).strip()][:MAX_SUBAGENTS]
+        if not tasks:
+            self._spawn_result = "tasks 누락"
+            return
+        results = [""] * len(tasks)
+        for i, t in enumerate(tasks):
+            yield SubagentEvent(i + 1, len(tasks), t, "start", "")
+        pending = [asyncio.create_task(self._run_indexed(i, t)) for i, t in enumerate(tasks)]
+        for fut in asyncio.as_completed(pending):
+            i, r = await fut
+            results[i] = r
+            status = "error" if r.startswith(("(오류", "(예외")) else "done"
+            yield SubagentEvent(i + 1, len(tasks), tasks[i], status, r[:80].replace("\n", " "))
+        self._spawn_result = "\n\n".join(
+            f"[서브에이전트 {i + 1}] {t}\n{results[i]}" for i, t in enumerate(tasks)
+        )
+
     async def _run_subagent(self, task: str) -> str:
-        sub = Agent(self.config, approver=None, allow_meta_tools=False)
+        sub = Agent(self.config, approver=self._subagent_approver(), allow_meta_tools=False)
         text = ""
         try:
             async for ev in sub.send(task):
@@ -329,6 +358,15 @@ class Agent:
                 tool = self._tools.get(name)
                 summary = tool.call_summary(args) if tool else name
                 yield ToolCallEvent(name, summary)
+                if name == "spawn_agents":
+                    self._spawn_result = ""
+                    async for sev in self._spawn_stream(args):
+                        yield sev
+                    yield ToolResultEvent(name, True, "서브에이전트 완료")
+                    self._history.append(
+                        {"role": "tool", "content": self._spawn_result, "tool_name": name}
+                    )
+                    continue
                 result = await self._exec(name, args)
                 yield ToolResultEvent(name, result.ok, result.summary)
                 self._history.append(

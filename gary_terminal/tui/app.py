@@ -21,6 +21,7 @@ from ..engine import (
     EscalateEvent,
     MessageDone,
     PlanEvent,
+    SubagentEvent,
     TokenEvent,
     ToolCallEvent,
     ToolResultEvent,
@@ -599,6 +600,13 @@ class GaryTerminalApp(App):
                 elif isinstance(ev, PlanEvent):
                     current = None
                     self._show_plan(ev.items)
+                elif isinstance(ev, SubagentEvent):
+                    current = None
+                    if ev.status == "start":
+                        self._add(f"🤖 서브에이전트 {ev.index}/{ev.total} 시작 · {ev.task[:50]}", "tool")
+                    else:
+                        icon = "✅" if ev.status == "done" else "⚠️"
+                        self._add(f"{icon} 서브에이전트 {ev.index}/{ev.total} · {ev.summary}", "tool")
                 elif isinstance(ev, ToolCallEvent):
                     current = None
                     self._add(f"🔧 {ev.summary}", "tool")

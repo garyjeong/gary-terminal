@@ -117,3 +117,30 @@ def test_subagent_has_no_meta_tools():
     assert "spawn_agents" not in sub._tools and "update_plan" not in sub._tools
     main = Agent(Config())
     assert "spawn_agents" in main._tools and "update_plan" in main._tools
+
+
+async def test_spawn_stream_progress(monkeypatch):
+    from gary_terminal.engine import SubagentEvent
+    agent = Agent(Config())
+
+    async def fake_sub(task):
+        return f"결과:{task}"
+
+    monkeypatch.setattr(agent, "_run_subagent", fake_sub)
+    evs = [e async for e in agent._spawn_stream({"tasks": ["a", "b"]})]
+    starts = [e for e in evs if isinstance(e, SubagentEvent) and e.status == "start"]
+    dones = [e for e in evs if isinstance(e, SubagentEvent) and e.status == "done"]
+    assert len(starts) == 2 and len(dones) == 2
+    assert "결과:a" in agent._spawn_result and "결과:b" in agent._spawn_result
+
+
+def test_subagent_approver_delegation():
+    async def appr(n, d):
+        return True
+
+    a1 = Agent(Config(), approver=appr)
+    assert a1._subagent_approver() is None
+    cfg = Config()
+    cfg.subagent_write = True
+    a2 = Agent(cfg, approver=appr)
+    assert a2._subagent_approver() is appr

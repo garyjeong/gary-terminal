@@ -10,7 +10,7 @@
 ## 기능
 - 툴콜 루프 — `read_file`·`list_dir`(자동) / `write_file`·`run_shell`(승인 게이트)
 - 코드 도구 — `search_code`(grep) · `run_tests`(승인) · `diagnostics`(린터/타입체크)
-- 에이전트 — 자동 에스컬레이션(로컬 실패→Claude) · `spawn_agents`(병렬 서브에이전트) · `update_plan`(계획/TODO)
+- 에이전트 — 자동 에스컬레이션(로컬 실패→Claude) · `spawn_agents`(병렬 서브에이전트, 진행 표시·쓰기위임 옵션) · `update_plan`(계획/TODO)
 - MCP — `~/.config/gary-terminal/mcp.json` 서버 연결(예: Obsidian). 읽기 자동·쓰기 승인
 - 마크다운/코드 syntax 렌더링
 - 코드베이스 인식 — `AGENTS.md` 자동 로드 + `@파일` 첨부
