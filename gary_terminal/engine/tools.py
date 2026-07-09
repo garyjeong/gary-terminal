@@ -1,9 +1,8 @@
 """로컬 코딩 도구 + 툴콜 프로토콜.
 
-작은 로컬 모델은 Ollama 네이티브 tool_calls를 신뢰성 있게 만들지 못하는 경우가
-많아, 본문에 JSON으로 도구 호출을 흘린다(종종 ```json 펜스나 앞뒤 잡담과 함께).
-그래서 프롬프트에 프로토콜을 명시하고, 본문에서 JSON 객체를 강건하게 추출해
-파싱하는 경로를 둔다(네이티브 tool_calls도 함께 지원).
+작은 로컬 모델은 네이티브 tool_calls를 신뢰성 있게 못 만들어 본문에 JSON을 흘린다.
+그래서 프롬프트에 프로토콜을 명시하고 본문 JSON을 강건 추출한다(네이티브도 지원).
+도구 레지스트리는 Agent 인스턴스가 소유한다(빌트인 + MCP 동적 등록).
 """
 from __future__ import annotations
 
@@ -21,8 +20,8 @@ SHELL_TIMEOUT = 60.0
 @dataclass
 class ToolResult:
     ok: bool
-    content: str   # 모델에게 돌려줄 내용
-    summary: str   # UI 표시용 짧은 요약
+    content: str
+    summary: str
 
 
 @dataclass
@@ -32,15 +31,14 @@ class Tool:
     parameters: dict
     requires_approval: bool
     run: Callable[[dict], Awaitable[ToolResult]]
-    describe: Callable[[dict], str]       # 승인 다이얼로그 상세
-    call_summary: Callable[[dict], str]   # 한 줄 요약
+    describe: Callable[[dict], str]
+    call_summary: Callable[[dict], str]
 
 
 def _clip(text: str) -> str:
     return text if len(text) <= MAX_OUTPUT else text[:MAX_OUTPUT] + "\n...(잘림)"
 
 
-# --- 구현 ---
 async def _read_file(args: dict) -> ToolResult:
     path = str(args.get("path", ""))
     p = Path(path).expanduser()
@@ -77,9 +75,7 @@ async def _run_shell(args: dict) -> ToolResult:
         return ToolResult(False, "command 누락", "command 누락")
     try:
         proc = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=SHELL_TIMEOUT)
     except asyncio.TimeoutError:
@@ -88,52 +84,58 @@ async def _run_shell(args: dict) -> ToolResult:
     return ToolResult(True, f"[exit {proc.returncode}]\n{text}", f"{cmd} (exit {proc.returncode})")
 
 
-TOOLS: dict[str, Tool] = {
-    "read_file": Tool(
-        "read_file", "Read a text file and return its content.",
-        {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        False, _read_file,
-        lambda a: f"읽기: {a.get('path')}",
-        lambda a: f"read_file({a.get('path')})",
-    ),
-    "list_dir": Tool(
-        "list_dir", "List entries in a directory.",
-        {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        False, _list_dir,
-        lambda a: f"목록: {a.get('path', '.')}",
-        lambda a: f"list_dir({a.get('path', '.')})",
-    ),
-    "write_file": Tool(
-        "write_file", "Create or overwrite a file with the given content.",
-        {"type": "object",
-         "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
-         "required": ["path", "content"]},
-        True, _write_file,
-        lambda a: f"파일: {a.get('path')}\n\n{str(a.get('content', ''))[:800]}",
-        lambda a: f"write_file({a.get('path')})",
-    ),
-    "run_shell": Tool(
-        "run_shell", "Run a shell command in the current directory and return its output.",
-        {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
-        True, _run_shell,
-        lambda a: f"셸 명령:\n\n{a.get('command')}",
-        lambda a: f"run_shell({str(a.get('command', ''))[:40]})",
-    ),
-}
-
-TOOL_SPECS = [
-    {"type": "function", "function": {
-        "name": t.name, "description": t.description, "parameters": t.parameters}}
-    for t in TOOLS.values()
-]
+def _builtin_tools() -> dict[str, Tool]:
+    return {
+        "read_file": Tool(
+            "read_file", "Read a text file and return its content.",
+            {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            False, _read_file, lambda a: f"읽기: {a.get('path')}",
+            lambda a: f"read_file({a.get('path')})",
+        ),
+        "list_dir": Tool(
+            "list_dir", "List entries in a directory.",
+            {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            False, _list_dir, lambda a: f"목록: {a.get('path', '.')}",
+            lambda a: f"list_dir({a.get('path', '.')})",
+        ),
+        "write_file": Tool(
+            "write_file", "Create or overwrite a file with the given content.",
+            {"type": "object",
+             "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+             "required": ["path", "content"]},
+            True, _write_file,
+            lambda a: f"파일: {a.get('path')}\n\n{str(a.get('content', ''))[:800]}",
+            lambda a: f"write_file({a.get('path')})",
+        ),
+        "run_shell": Tool(
+            "run_shell", "Run a shell command in the current directory and return its output.",
+            {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+            True, _run_shell, lambda a: f"셸 명령:\n\n{a.get('command')}",
+            lambda a: f"run_shell({str(a.get('command', ''))[:40]})",
+        ),
+    }
 
 
-def tools_protocol_text() -> str:
+def new_registry() -> dict[str, Tool]:
+    return _builtin_tools()
+
+
+def make_specs(tools: dict[str, Tool]) -> list[dict]:
+    return [
+        {"type": "function", "function": {
+            "name": t.name, "description": t.description, "parameters": t.parameters}}
+        for t in tools.values()
+    ]
+
+
+def make_protocol(tools: dict[str, Tool]) -> str:
     lines = ["사용 가능한 도구:"]
-    for t in TOOLS.values():
+    for t in tools.values():
         keys = ", ".join(t.parameters.get("properties", {}).keys())
-        approval = " (실행 전 사용자 승인 필요)" if t.requires_approval else ""
-        lines.append(f"- {t.name}({keys}): {t.description}{approval}")
+        appr = " (승인 필요)" if t.requires_approval else ""
+        desc = (t.description or "").strip().splitlines()
+        head = desc[0][:100] if desc else ""
+        lines.append(f"- {t.name}({keys}): {head}{appr}")
     lines += [
         "",
         "도구를 호출하려면 다른 말 없이 JSON 객체 하나만 출력한다(코드펜스·설명 금지):",
@@ -145,7 +147,6 @@ def tools_protocol_text() -> str:
 
 
 def _first_json_object(s: str) -> dict | None:
-    """문자열에서 첫 번째로 균형 잡힌 {...} 객체를 찾아 파싱(펜스·앞뒤 텍스트 무시)."""
     start = s.find("{")
     while start != -1:
         depth = 0
@@ -173,13 +174,12 @@ def _first_json_object(s: str) -> dict | None:
                             return obj
                     except Exception:
                         pass
-                    break  # 이 시작점 실패 → 다음 '{' 시도
+                    break
         start = s.find("{", start + 1)
     return None
 
 
-def parse_tool_call(text: str) -> tuple[str, dict] | None:
-    """본문에서 {"name"/"tool", "arguments"} 형태의 도구 호출을 강건하게 파싱."""
+def parse_tool_call(text: str, tools: dict[str, Tool]) -> tuple[str, dict] | None:
     obj = _first_json_object(text)
     if obj is None:
         return None
@@ -192,6 +192,6 @@ def parse_tool_call(text: str) -> tuple[str, dict] | None:
             args = json.loads(args)
         except Exception:
             args = {}
-    if isinstance(name, str) and name in TOOLS and isinstance(args, dict):
+    if isinstance(name, str) and name in tools and isinstance(args, dict):
         return name, args
     return None

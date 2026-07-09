@@ -153,6 +153,7 @@ class GaryTerminalApp(App):
         if self.agent.project_name:
             self._add(f"📁 프로젝트 컨텍스트 로드: {self.agent.project_name}", "tool")
         self.query_one("#prompt", Input).focus()
+        self._load_mcp()
 
     def _add(self, text: str, role: str, markup: bool = False) -> Message:
         msg = Message(text, role, markup)
@@ -336,6 +337,19 @@ class GaryTerminalApp(App):
         finally:
             self._streaming = False
             self._save_session()
+
+    @work(exclusive=False)
+    async def _load_mcp(self) -> None:
+        try:
+            summary = await self.agent.load_mcp()
+        except Exception as exc:  # noqa: BLE001
+            self._add(f"MCP 로드 오류: {exc}", "error")
+            return
+        for name, count, err in summary:
+            if err:
+                self._add(f"🔌 MCP {name}: 실패 — {err}", "error")
+            elif count:
+                self._add(f"🔌 MCP {name}: 도구 {count}개 로드", "tool")
 
     def action_clear(self) -> None:
         self.agent.reset()

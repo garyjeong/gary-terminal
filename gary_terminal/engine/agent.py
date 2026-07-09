@@ -14,8 +14,9 @@ from .events import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from .mcp_client import build_mcp_tools
 from .ollama_client import OllamaClient, OllamaError
-from .tools import TOOL_SPECS, TOOLS, ToolResult, parse_tool_call, tools_protocol_text
+from .tools import ToolResult, make_protocol, make_specs, new_registry, parse_tool_call
 
 MAX_STEPS = 8
 Approver = Callable[[str, str], Awaitable[bool]]
@@ -24,8 +25,8 @@ Approver = Callable[[str, str], Awaitable[bool]]
 class Agent:
     """대화 상태 + 툴콜 루프를 도는 엔진.
 
-    UI와 모델 사이의 '이음매'. 나중에 이 인터페이스를 서버로 빼면 client/server.
-    approver(name, detail) -> bool: 승인이 필요한 도구 실행 전 UI에 확인을 요청.
+    도구 레지스트리(self._tools)를 인스턴스가 소유한다: 빌트인 + MCP 동적 등록.
+    approver(name, detail) -> bool: 승인 필요한 도구 실행 전 UI 확인.
     """
 
     def __init__(self, config: Config, approver: Approver | None = None) -> None:
@@ -34,6 +35,12 @@ class Agent:
         self._history: list[dict] = []
         self._approver = approver
         self._project = load_project_context()
+        self._tools = new_registry()
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        self._specs = make_specs(self._tools)
+        self._protocol = make_protocol(self._tools)
 
     @property
     def model(self) -> str:
@@ -59,11 +66,18 @@ class Agent:
         self._project = load_project_context()
         return self.project_name
 
+    async def load_mcp(self) -> list[tuple[str, int, str | None]]:
+        tools, summary = await build_mcp_tools()
+        for t in tools:
+            self._tools[t.name] = t
+        self._rebuild()
+        return summary
+
     async def list_models(self) -> list[str]:
         return await self._client.list_models()
 
     def _messages(self) -> list[dict]:
-        system = self.config.system_prompt + "\n\n" + tools_protocol_text()
+        system = self.config.system_prompt + "\n\n" + self._protocol
         if self._project:
             name, content = self._project
             system += f"\n\n프로젝트 컨텍스트 ({name}):\n{content}"
@@ -71,11 +85,6 @@ class Agent:
 
     @staticmethod
     def _decide_candidate(stripped: str) -> bool | None:
-        """버퍼 앞부분으로 '본문이 툴콜 JSON인가'를 판정.
-
-        True=툴콜 후보(스트리밍 숨김) / False=일반 텍스트(스트리밍) / None=판단 보류.
-        JSON 객체({...})와 ```json 펜스만 후보로 보고, ```python 등 코드 답변은 흘린다.
-        """
         if not stripped:
             return None
         if stripped[0] == "{":
@@ -98,7 +107,7 @@ class Agent:
             native: list[dict] = []
             try:
                 async for chunk in self._client.stream_chat(
-                    self.config.model, self._messages(), TOOL_SPECS
+                    self.config.model, self._messages(), self._specs
                 ):
                     msg = chunk.get("message", {})
                     delta = msg.get("content", "")
@@ -133,7 +142,7 @@ class Agent:
 
             self._history.append({"role": "assistant", "content": buffer})
             for name, args in calls:
-                tool = TOOLS.get(name)
+                tool = self._tools.get(name)
                 summary = tool.call_summary(args) if tool else name
                 yield ToolCallEvent(name, summary)
                 result = await self._exec(name, args)
@@ -160,13 +169,13 @@ class Agent:
                 if name:
                     calls.append((name, args))
         elif candidate:
-            parsed = parse_tool_call(buffer)
+            parsed = parse_tool_call(buffer, self._tools)
             if parsed:
                 calls.append(parsed)
         return calls
 
     async def _exec(self, name: str, args: dict) -> ToolResult:
-        tool = TOOLS.get(name)
+        tool = self._tools.get(name)
         if tool is None:
             return ToolResult(False, f"unknown tool: {name}", f"알 수 없는 도구: {name}")
         if tool.requires_approval:
@@ -177,5 +186,5 @@ class Agent:
                 return ToolResult(False, "denied by user", "거부됨")
         try:
             return await tool.run(args)
-        except Exception as exc:  # noqa: BLE001 - 도구 오류는 모델에 되돌려줌
+        except Exception as exc:  # noqa: BLE001
             return ToolResult(False, f"error: {exc}", f"오류: {exc}")
