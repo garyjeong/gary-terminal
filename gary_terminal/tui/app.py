@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import time
+from pathlib import Path
+
+from rich.markup import escape
 from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -18,26 +22,28 @@ from ..engine import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from ..engine.session import SessionInfo, SessionStore
+from .completion import compute_completions
 
 HELP_TEXT = """[b]명령어[/b]
   /help            이 도움말
   /models          설치된 Ollama 모델 목록
-  /model <name>    사용 모델 변경 (인자 없으면 현재 모델)
+  /model <name>    사용 모델 변경
   /reload          프로젝트 컨텍스트(AGENTS.md) 재로드
-  /clear           대화 초기화
+  /save            현재 대화 세션 저장
+  /sessions        저장된 세션 목록
+  /resume <번호>   세션 재개 (번호 없으면 최근)
+  /clear           대화 초기화 (새 세션)
   /quit            종료
 [b]도구[/b] read_file · list_dir (자동) · write_file · run_shell (승인 필요)
-[b]첨부[/b] 메시지에 @경로/파일.py 를 쓰면 그 파일 내용을 프롬프트에 포함
+[b]첨부[/b] @경로/파일.py 로 파일 내용을 프롬프트에 포함
+[b]Tab[/b] 슬래시 명령 · @파일 경로 자동완성
 [dim]그 외 입력은 모델에게 전송됩니다.[/dim]"""
 
 
 class Message(Static):
-    """대화 한 줄.
-
-    - markup=True: Rich 마크업 해석(시스템/도구 메시지)
-    - markup=False: 리터럴(사용자 입력, 스트리밍 중 어시스턴트)
-    - finalize_markdown(): 완료된 어시스턴트 답을 마크다운(코드 하이라이트)으로 재렌더
-    """
+    """대화 한 줄. markup=True면 Rich 마크업, False면 리터럴.
+    finalize_markdown(): 완료된 답을 마크다운(코드 하이라이트)으로 재렌더."""
 
     def __init__(self, text: str, role: str, markup: bool = False) -> None:
         super().__init__(classes=f"msg {role}")
@@ -55,6 +61,22 @@ class Message(Static):
     def finalize_markdown(self) -> None:
         if self._buffer.strip():
             self.update(RichMarkdown(self._buffer))
+
+
+class PromptInput(Input):
+    """Tab 자동완성을 지원하는 입력창."""
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "tab":
+            event.prevent_default()
+            event.stop()
+            new, cands = compute_completions(self.value)
+            if new != self.value:
+                self.value = new
+                self.cursor_position = len(self.value)
+            show = getattr(self.app, "_show_completions", None)
+            if show:
+                show(cands)
 
 
 class ApprovalScreen(ModalScreen[str]):
@@ -110,11 +132,15 @@ class GaryTerminalApp(App):
         self._streaming = False
         self._worker = None
         self._always_allow: set[str] = set()
+        self._sessions = SessionStore()
+        self._session_id = time.strftime("%Y%m%d-%H%M%S")
+        self._last_sessions: list[SessionInfo] = []
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield VerticalScroll(id="conversation")
-        yield Input(placeholder="메시지 입력 후 Enter … (/help · @파일 첨부)", id="prompt")
+        yield Static("", id="hint")
+        yield PromptInput(placeholder="메시지 입력 후 Enter … (/help · @파일 · Tab 자동완성)", id="prompt")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -137,6 +163,10 @@ class GaryTerminalApp(App):
     def _scroll_end(self) -> None:
         self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
 
+    def _show_completions(self, cands: list[str]) -> None:
+        hint = self.query_one("#hint", Static)
+        hint.update(Text("  ".join(cands)) if cands else Text(""))
+
     async def _approve_tool(self, name: str, detail: str) -> bool:
         if name in self._always_allow:
             return True
@@ -147,6 +177,7 @@ class GaryTerminalApp(App):
         return result == "approve"
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.query_one("#hint", Static).update(Text(""))
         text = event.value.strip()
         event.input.value = ""
         if not text:
@@ -174,6 +205,12 @@ class GaryTerminalApp(App):
             name = self.agent.reload_context()
             msg = f"컨텍스트 재로드: {name}" if name else "프로젝트 컨텍스트 파일 없음 (AGENTS.md)"
             self._add(msg, "system", markup=True)
+        elif cmd == "save":
+            self._save_session(explicit=True)
+        elif cmd == "sessions":
+            self._show_sessions()
+        elif cmd == "resume":
+            self._resume_session(arg)
         elif cmd == "models":
             await self._show_models()
         elif cmd == "model":
@@ -198,6 +235,71 @@ class GaryTerminalApp(App):
         cur = self.agent.model
         lines = "\n".join(f"  {'●' if m == cur else '○'} {m}" for m in models)
         self._add(f"[b]설치된 모델[/b]\n{lines}", "system", markup=True)
+
+    # --- 세션 ---
+    def _save_session(self, explicit: bool = False) -> None:
+        hist = self.agent.export_history()
+        if not hist:
+            if explicit:
+                self._add("저장할 대화가 없습니다.", "system", markup=True)
+            return
+        try:
+            p = self._sessions.save(self._session_id, hist, self.agent.model, str(Path.cwd()))
+        except Exception as exc:  # noqa: BLE001
+            if explicit:
+                self._add(f"저장 실패: {exc}", "error")
+            return
+        if explicit:
+            self._add(f"세션 저장: {p.name}", "system", markup=True)
+
+    def _show_sessions(self) -> None:
+        sessions = self._sessions.list(str(Path.cwd()))
+        self._last_sessions = sessions
+        if not sessions:
+            self._add("저장된 세션이 없습니다.", "system", markup=True)
+            return
+        lines = []
+        for i, s in enumerate(sessions[:15], 1):
+            when = time.strftime("%m-%d %H:%M", time.localtime(s.updated))
+            lines.append(f"  {i}. {escape(s.title)}  · {s.turns}턴 · {when} · {escape(s.model)}")
+        self._add("[b]세션 (/resume <번호>)[/b]\n" + "\n".join(lines), "system", markup=True)
+
+    def _resume_session(self, arg: str) -> None:
+        sessions = self._last_sessions or self._sessions.list(str(Path.cwd()))
+        self._last_sessions = sessions
+        if not sessions:
+            self._add("저장된 세션이 없습니다.", "system", markup=True)
+            return
+        n = int(arg) if arg.isdigit() else 1
+        if not (1 <= n <= len(sessions)):
+            self._add(f"범위 밖입니다: 1~{len(sessions)}", "system", markup=True)
+            return
+        info = sessions[n - 1]
+        data = self._sessions.load(info.path)
+        self.agent.import_history(data.get("messages", []))
+        model = data.get("model")
+        if model:
+            self.agent.set_model(model)
+            self.sub_title = model
+        self._session_id = info.id
+        self._render_history()
+        self._add(f"세션 재개: {escape(info.title)} ({info.turns}턴)", "system", markup=True)
+
+    def _render_history(self) -> None:
+        conv = self.query_one("#conversation", VerticalScroll)
+        conv.remove_children()
+        for m in self.agent.export_history():
+            role = m.get("role")
+            content = str(m.get("content", ""))
+            if role == "user":
+                self._add(content, "user")
+            elif role == "assistant":
+                if content.strip():
+                    msg = self._add("", "assistant")
+                    msg._buffer = content
+                    msg.finalize_markdown()
+            elif role == "tool":
+                self._add(f"🔧 {m.get('tool_name', 'tool')} 결과", "tool")
 
     @work(exclusive=True)
     async def _run_turn(self, user_text: str) -> None:
@@ -233,11 +335,13 @@ class GaryTerminalApp(App):
                     self._add(f"[오류] {ev.message}", "error")
         finally:
             self._streaming = False
+            self._save_session()
 
     def action_clear(self) -> None:
         self.agent.reset()
+        self._session_id = time.strftime("%Y%m%d-%H%M%S")
         self.query_one("#conversation", VerticalScroll).remove_children()
-        self._add("대화를 초기화했습니다.", "system", markup=True)
+        self._add("대화를 초기화했습니다. (새 세션)", "system", markup=True)
 
     def action_cancel(self) -> None:
         if self._streaming and self._worker is not None:

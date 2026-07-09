@@ -49,6 +49,12 @@ class Agent:
     def reset(self) -> None:
         self._history.clear()
 
+    def export_history(self) -> list[dict]:
+        return list(self._history)
+
+    def import_history(self, messages: list[dict]) -> None:
+        self._history = [dict(m) for m in messages]
+
     def reload_context(self) -> str | None:
         self._project = load_project_context()
         return self.project_name

@@ -7,6 +7,14 @@ Screen {
     padding: 1 2;
 }
 
+#hint {
+    height: auto;
+    max-height: 3;
+    padding: 0 2;
+    color: $accent;
+    text-style: dim;
+}
+
 #prompt {
     margin: 0 1 1 1;
     border: round $accent;
