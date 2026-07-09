@@ -26,12 +26,17 @@
     uv sync
     uv run gt
 
+## 전역 설치 (어디서든 `gt`)
+    uv tool install .          # ~/.local/bin/gt 설치
+    gt                         # 아무 폴더에서 실행
+코드 변경 후 갱신: `uv tool install . --force` · 제거: `uv tool uninstall gary-terminal`
+
 ## 설정 (환경변수)
 - `GT_MODEL` (기본 `qwen2.5-coder:7b`) · `GT_OLLAMA_HOST` · `GT_CLAUDE_MODEL` (기본 `sonnet`) · `GT_CONTEXT_LIMIT` (기본 8000)
 
 ## 명령 (`/help`)
-`/model` `/models` `/usage` `/compact` `/reload` `/save` `/sessions` `/resume` `/clear` `/quit`
-단축키: `Tab` 자동완성 · `Ctrl+L` 초기화 · `Esc` 중단 · `Ctrl+C` 종료
+`/model` `/models` `/theme` `/usage` `/compact` `/reload` `/save` `/sessions` `/resume` `/clear` `/quit`
+단축키: `Enter` 전송 · `Shift+Enter`/`Ctrl+J` 줄바꿈 · `Tab` 완성 · `위/아래` 히스토리 · `Ctrl+R` 검색 · `Ctrl+L` 다시그리기 · `Esc` 중단 · `Ctrl+C`/`Ctrl+D` 종료
 
 ## MCP 설정 예시 (`~/.config/gary-terminal/mcp.json`)
     {
