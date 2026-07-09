@@ -9,3 +9,4 @@ theme         = "gary-dark"               # /theme 목록의 이름
 auto_escalate = false           # 로컬 실패 시 자동 승격
 escalate_to   = "claude"        # 승격 대상 백엔드
 subagent_write = false          # 서브에이전트 쓰기 도구 허용(승인 필요)
+embed_model   = "nomic-embed-text"  # /index 의미검색 임베딩 (ollama pull 필요)

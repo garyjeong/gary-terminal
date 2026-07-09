@@ -8,6 +8,7 @@ dependencies = [
     "textual>=0.80",
     "httpx>=0.27",
     "mcp>=1.28.1",
+    "numpy>=1.26",
 ]
 
 [project.scripts]

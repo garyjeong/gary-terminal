@@ -4,6 +4,8 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 
+from pathlib import Path
+
 from ..config import Config
 from .backend import ClaudeCliBackend, OllamaBackend
 from .context import estimate_tokens, expand_mentions, load_project_context
@@ -21,7 +23,8 @@ from .events import (
     ToolResultEvent,
 )
 from .mcp_client import build_mcp_tools
-from .ollama_client import OllamaError
+from .rag import RagIndex
+from .ollama_client import OllamaClient, OllamaError
 from .tools import Tool, ToolResult, make_protocol, make_specs, new_registry, parse_tool_call
 from .usage import UsageTracker
 
@@ -57,10 +60,14 @@ class Agent:
         self.usage = UsageTracker()
         self.plan: list[dict] = []
         self._spawn_result: str = ""
+        self._embed_client = OllamaClient(config.ollama_host)
+        self._rag: RagIndex | None = None
         self._tools = new_registry()
         if allow_meta_tools:
             self._tools["spawn_agents"] = self._make_spawn_tool()
             self._tools["update_plan"] = self._make_plan_tool()
+            self._tools["codebase_search"] = self._make_search_tool()
+            self._rag = RagIndex(Path.cwd(), self._embed_texts)
         self._rebuild()
 
     def _rebuild(self) -> None:
@@ -155,6 +162,49 @@ class Agent:
                     "content": {"type": "string"}, "status": {"type": "string"}}}}},
              "required": ["tasks"]},
             False, run, lambda a: "계획 갱신", lambda a: "update_plan()",
+        )
+
+    # --- 의미기반 코드 검색(RAG) ---
+    async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
+        return await self._embed_client.embed(self.config.embed_model, texts)
+
+    async def build_index(self, progress=None) -> dict:
+        if self._rag is None:
+            self._rag = RagIndex(Path.cwd(), self._embed_texts)
+        return await self._rag.build(progress)
+
+    def _make_search_tool(self) -> Tool:
+        async def run(args: dict) -> ToolResult:
+            if self._rag is None or self._rag.count == 0:
+                return ToolResult(False, "코드 색인이 없습니다. /index 로 먼저 색인하세요.", "색인 없음")
+            query = str(args.get("query", ""))
+            if not query:
+                return ToolResult(False, "query 누락", "query 누락")
+            try:
+                k = int(args.get("k", 8) or 8)
+            except (TypeError, ValueError):
+                k = 8
+            try:
+                hits = await self._rag.search(query, k)
+            except Exception as exc:  # noqa: BLE001
+                return ToolResult(False, f"검색 실패: {exc}", "검색 실패")
+            if not hits:
+                return ToolResult(True, "(관련 코드 없음)", f"{query} (0건)")
+            body = "\n\n".join(
+                f"# {h['file']}:{h['start']}-{h['end']} (score {h['score']:.2f})\n{h['text']}"
+                for h in hits
+            )
+            return ToolResult(True, body[:60000], f"{query} ({len(hits)}건)")
+
+        return Tool(
+            "codebase_search",
+            "Semantic (meaning-based) search over the indexed codebase. Run /index first.",
+            {"type": "object",
+             "properties": {"query": {"type": "string"}, "k": {"type": "integer"}},
+             "required": ["query"]},
+            False, run,
+            lambda a: f"의미검색: {a.get('query')}",
+            lambda a: f"codebase_search({str(a.get('query', ''))[:30]})",
         )
 
     # --- 서브에이전트(병렬) ---

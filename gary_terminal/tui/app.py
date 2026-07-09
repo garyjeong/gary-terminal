@@ -40,6 +40,7 @@ HELP_TEXT = """[b]명령어[/b]
   /usage           이번 세션 사용량(토큰/비용)
   /compact         대화 컨텍스트 강제 요약·압축
   /reload          프로젝트 컨텍스트(AGENTS.md) 재로드
+  /index           코드베이스 의미검색 색인(임베딩)
   /theme [이름]    테마 목록/변경
   /search <말>     대화에서 찾아 하이라이트
   /copy            마지막 답변 클립보드 복사
@@ -382,6 +383,8 @@ class GaryTerminalApp(App):
             self._cmd_auto(arg)
         elif cmd == "plan":
             self._show_plan(self.agent.plan)
+        elif cmd == "index":
+            self._run_index()
         elif cmd == "models":
             await self._show_models()
         elif cmd == "model":
@@ -569,6 +572,19 @@ class GaryTerminalApp(App):
                 self._add(f"🔌 MCP {name}: 실패 — {err}", "error")
             elif count:
                 self._add(f"🔌 MCP {name}: 도구 {count}개 로드", "tool")
+
+    @work(exclusive=False)
+    async def _run_index(self) -> None:
+        self._add("코드 색인 중… (임베딩 모델 필요: ollama pull nomic-embed-text)", "system", markup=True)
+        try:
+            stats = await self.agent.build_index()
+        except Exception as exc:  # noqa: BLE001
+            self._add(f"색인 실패: {exc}", "error")
+            return
+        self._add(
+            f"색인 완료: 파일 {stats['files']} · 청크 {stats['chunks']} · 변경 {stats['changed']}",
+            "system", markup=True,
+        )
 
     @work(exclusive=True)
     async def _run_turn(self, user_text: str) -> None:

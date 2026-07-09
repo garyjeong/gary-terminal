@@ -32,6 +32,28 @@ class OllamaClient:
             raise OllamaError(f"Ollama 연결 실패: {exc}") from exc
         return [m["name"] for m in data.get("models", [])]
 
+    async def embed(self, model: str, inputs: list[str]) -> list[list[float]]:
+        url = f"{self._host}/api/embed"
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(url, json={"model": model, "input": inputs})
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.ConnectError:
+            raise OllamaError(
+                "Ollama 서버에 연결할 수 없습니다. `ollama serve` 실행 여부를 확인하세요."
+            ) from None
+        except httpx.HTTPStatusError as exc:
+            raise OllamaError(
+                f"임베딩 실패 — 모델을 받았는지 확인하세요: ollama pull {model} ({exc})"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise OllamaError(f"임베딩 요청 실패: {exc}") from exc
+        embs = data.get("embeddings") or []
+        if not embs:
+            raise OllamaError(f"임베딩 응답이 비었습니다 (모델 {model} 확인)")
+        return embs
+
     async def stream_chat(
         self,
         model: str,
