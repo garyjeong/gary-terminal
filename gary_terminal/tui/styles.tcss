@@ -51,6 +51,10 @@ Screen {
     border-left: thick $error;
 }
 
+.msg.match {
+    background: $warning 30%;
+}
+
 ApprovalScreen {
     align: center middle;
 }

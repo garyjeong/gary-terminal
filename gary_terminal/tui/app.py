@@ -37,6 +37,9 @@ HELP_TEXT = """[b]명령어[/b]
   /usage           이번 세션 사용량(토큰/비용)
   /compact         대화 컨텍스트 강제 요약·압축
   /reload          프로젝트 컨텍스트(AGENTS.md) 재로드
+  /theme [이름]    테마 목록/변경
+  /search <말>     대화에서 찾아 하이라이트
+  /copy            마지막 답변 클립보드 복사
   /save · /sessions · /resume <번호>   세션 저장/목록/재개
   /clear           대화 초기화 (새 세션)
   /quit            종료
@@ -47,18 +50,28 @@ HELP_TEXT = """[b]명령어[/b]
 
 
 class Message(Static):
-    def __init__(self, text: str, role: str, markup: bool = False) -> None:
+    def __init__(self, text: str, role: str, markup: bool = False, live: bool = False) -> None:
         super().__init__(classes=f"msg {role}")
         self._buffer = text
         self._markup = markup
+        self._live = live
         self._sync()
 
     def _sync(self) -> None:
-        self.update(self._buffer if self._markup else Text(self._buffer))
+        if self._live and self._buffer.strip():
+            self.update(RichMarkdown(self._buffer))
+        elif self._markup:
+            self.update(self._buffer)
+        else:
+            self.update(Text(self._buffer))
+
+    def feed(self, delta: str, render: bool = True) -> None:
+        self._buffer += delta
+        if render:
+            self._sync()
 
     def add_delta(self, delta: str) -> None:
-        self._buffer += delta
-        self._sync()
+        self.feed(delta)
 
     def finalize_markdown(self) -> None:
         if self._buffer.strip():
@@ -286,8 +299,8 @@ class GaryTerminalApp(App):
         self.query_one("#prompt", TextArea).focus()
         self._load_mcp()
 
-    def _add(self, text: str, role: str, markup: bool = False) -> Message:
-        msg = Message(text, role, markup)
+    def _add(self, text: str, role: str, markup: bool = False, live: bool = False) -> Message:
+        msg = Message(text, role, markup, live)
         self.query_one("#conversation", VerticalScroll).mount(msg)
         self.call_after_refresh(self._scroll_end)
         return msg
@@ -356,6 +369,10 @@ class GaryTerminalApp(App):
             await self._cmd_compact()
         elif cmd == "theme":
             self._cmd_theme(arg)
+        elif cmd == "search":
+            self._cmd_search(arg)
+        elif cmd == "copy":
+            self._cmd_copy(arg)
         elif cmd == "models":
             await self._show_models()
         elif cmd == "model":
@@ -388,6 +405,33 @@ class GaryTerminalApp(App):
         else:
             self._add("압축할 이전 대화가 충분치 않습니다.", "system", markup=True)
         self._update_status()
+
+    def _cmd_search(self, term: str) -> None:
+        msgs = list(self.query(Message))
+        for m in msgs:
+            m.remove_class("match")
+        if not term:
+            self._add("하이라이트를 해제했습니다.", "system", markup=True)
+            return
+        q = term.lower()
+        hits = [m for m in msgs if q in m._buffer.lower()]
+        for m in hits:
+            m.add_class("match")
+        if hits:
+            hits[0].scroll_visible()
+            self._add(f"검색 '{escape(term)}': {len(hits)}건 일치", "system", markup=True)
+        else:
+            self._add(f"검색 '{escape(term)}': 없음", "system", markup=True)
+
+    def _cmd_copy(self, arg: str) -> None:
+        msgs = [m for m in self.query(Message)
+                if "assistant" in m.classes and m._buffer.strip()]
+        if not msgs:
+            self._add("복사할 어시스턴트 답변이 없습니다.", "system", markup=True)
+            return
+        text = msgs[-1]._buffer
+        self.copy_to_clipboard(text)
+        self._add(f"마지막 답변을 클립보드에 복사했습니다 ({len(text)}자).", "system", markup=True)
 
     def _cmd_theme(self, arg: str) -> None:
         themes = list(self.available_themes.keys())
@@ -497,12 +541,15 @@ class GaryTerminalApp(App):
     async def _run_turn(self, user_text: str) -> None:
         self._streaming = True
         current: Message | None = None
+        tok = 0
         try:
             async for ev in self.agent.send(user_text):
                 if isinstance(ev, TokenEvent):
                     if current is None:
-                        current = self._add("", "assistant")
-                    current.add_delta(ev.text)
+                        current = self._add("", "assistant", live=True)
+                        tok = 0
+                    tok += 1
+                    current.feed(ev.text, render=(tok % 4 == 0))
                     self._scroll_end()
                 elif isinstance(ev, AttachmentEvent):
                     for p in ev.attached:

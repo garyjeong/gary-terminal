@@ -6,7 +6,7 @@ from pathlib import Path
 
 COMMANDS = [
     "help", "models", "model", "reload", "clear",
-    "save", "sessions", "resume", "usage", "compact", "theme", "quit",
+    "save", "sessions", "resume", "usage", "compact", "theme", "search", "copy", "quit",
 ]
 
 
