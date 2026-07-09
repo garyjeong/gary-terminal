@@ -9,10 +9,10 @@ Screen {
 
 #hint {
     height: auto;
-    max-height: 3;
+    max-height: 4;
     padding: 0 2;
     color: $accent;
-    text-style: dim;
+    background: $panel;
 }
 
 #prompt {

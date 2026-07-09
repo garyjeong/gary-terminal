@@ -52,3 +52,36 @@ def _complete_path(frag: str, base: Path) -> tuple[str, list[str]]:
     if len(matches) == 1:
         return prefix + deco(matches[0]), []
     return prefix + os.path.commonprefix(matches), [deco(m) for m in matches]
+
+
+def list_suggestions(text: str, cwd: Path | None = None) -> list[str]:
+    """입력 즉시 표시할 후보 목록(슬래시 명령 / @파일). 개수 무관 전체 반환."""
+    base = Path(cwd) if cwd else Path.cwd()
+    if text.startswith("/") and " " not in text:
+        prefix = text[1:]
+        return [f"/{c}" for c in COMMANDS if c.startswith(prefix)]
+    idx = max(text.rfind(" "), text.rfind("\t")) + 1
+    token = text[idx:]
+    if token.startswith("@"):
+        return _list_paths(token[1:], base)
+    return []
+
+
+def _list_paths(frag: str, base: Path) -> list[str]:
+    if "/" in frag:
+        dpart, name = frag.rsplit("/", 1)
+        d = Path(dpart) if Path(dpart).is_absolute() else base / dpart
+        pre = dpart + "/"
+    else:
+        d, name, pre = base, frag, ""
+    try:
+        entries = sorted(e for e in os.listdir(d) if not e.startswith("."))
+    except OSError:
+        return []
+    out = []
+    for e in entries:
+        if e.startswith(name):
+            out.append("@" + pre + (e + "/" if (d / e).is_dir() else e))
+        if len(out) >= 12:
+            break
+    return out

@@ -24,7 +24,7 @@ from ..engine import (
     ToolResultEvent,
 )
 from ..engine.session import SessionInfo, SessionStore
-from .completion import compute_completions
+from .completion import compute_completions, list_suggestions
 
 HELP_TEXT = """[b]명령어[/b]
   /help            이 도움말
@@ -165,6 +165,9 @@ class GaryTerminalApp(App):
     def _show_completions(self, cands: list[str]) -> None:
         hint = self.query_one("#hint", Static)
         hint.update(Text("  ".join(cands)) if cands else Text(""))
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._show_completions(list_suggestions(event.value))
 
     def _status_text(self) -> str:
         a = self.agent
