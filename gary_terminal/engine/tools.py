@@ -10,6 +10,8 @@ import asyncio
 import difflib
 import json
 import os
+import shlex
+import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,8 +139,111 @@ def _builtin_tools() -> dict[str, Tool]:
     }
 
 
+async def _shell(cmd: str, timeout: float = SHELL_TIMEOUT) -> tuple[int, str]:
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        return 124, f"타임아웃 ({timeout:.0f}s)"
+    return proc.returncode or 0, _clip(out.decode(errors="replace"))
+
+
+def _detect_project(base: str) -> str | None:
+    b = Path(base).expanduser()
+    if any((b / f).is_file() for f in ("pyproject.toml", "pytest.ini", "setup.py")):
+        return "python"
+    if (b / "package.json").is_file():
+        return "node"
+    if (b / "Cargo.toml").is_file():
+        return "rust"
+    if (b / "go.mod").is_file():
+        return "go"
+    return None
+
+
+async def _search_code(args: dict) -> ToolResult:
+    query = str(args.get("query", ""))
+    path = str(args.get("path", "."))
+    if not query:
+        return ToolResult(False, "query 누락", "query 누락")
+    if shutil.which("rg"):
+        cmd = f"rg -n --no-heading -S {shlex.quote(query)} {shlex.quote(path)}"
+    else:
+        cmd = f"grep -rniI {shlex.quote(query)} {shlex.quote(path)}"
+    _, out = await _shell(cmd)
+    lines = [l for l in out.splitlines() if l.strip()]
+    if not lines:
+        return ToolResult(True, "(일치 없음)", f"{query} (0건)")
+    return ToolResult(True, "\n".join(lines[:200]), f"{query} ({len(lines)}줄)")
+
+
+async def _run_tests(args: dict) -> ToolResult:
+    path = str(args.get("path", "."))
+    kind = _detect_project(path)
+    cmds = {
+        "python": "uv run pytest -q" if (Path(path) / "uv.lock").is_file() else "pytest -q",
+        "node": "npm test --silent",
+        "rust": "cargo test",
+        "go": "go test ./...",
+    }
+    cmd = cmds.get(kind)
+    if not cmd:
+        return ToolResult(False, "테스트 프레임워크 감지 실패", "감지 실패")
+    rc, out = await _shell(f"cd {shlex.quote(path)} && {cmd}", timeout=300.0)
+    return ToolResult(rc == 0, f"[{cmd}] exit {rc}\n{out}", f"{cmd} (exit {rc})")
+
+
+async def _diagnostics(args: dict) -> ToolResult:
+    path = str(args.get("path", "."))
+    kind = _detect_project(path)
+    if kind == "python":
+        cmd = "ruff check ." if shutil.which("ruff") else "python -m compileall -q ."
+    elif kind == "node":
+        cmd = "npx --no-install tsc --noEmit"
+    elif kind == "rust":
+        cmd = "cargo check"
+    elif kind == "go":
+        cmd = "go vet ./..."
+    else:
+        return ToolResult(False, "진단 도구 감지 실패", "감지 실패")
+    rc, out = await _shell(f"cd {shlex.quote(path)} && {cmd}", timeout=180.0)
+    return ToolResult(rc == 0, f"[{cmd}] exit {rc}\n{out or '(문제 없음)'}", f"{cmd} (exit {rc})")
+
+
+def _extra_tools() -> dict[str, Tool]:
+    return {
+        "search_code": Tool(
+            "search_code", "Search code by text/regex across the repo (ripgrep/grep).",
+            {"type": "object",
+             "properties": {"query": {"type": "string"}, "path": {"type": "string"}},
+             "required": ["query"]},
+            False, _search_code,
+            lambda a: f"코드 검색: {a.get('query')}",
+            lambda a: f"search_code({str(a.get('query',''))[:30]})",
+        ),
+        "run_tests": Tool(
+            "run_tests", "Detect the project's test framework and run its test suite.",
+            {"type": "object", "properties": {"path": {"type": "string"}}},
+            True, _run_tests,
+            lambda a: f"테스트 실행: {a.get('path', '.')}",
+            lambda a: f"run_tests({a.get('path', '.')})",
+        ),
+        "diagnostics": Tool(
+            "diagnostics", "Run the project's linter/type-checker and report problems.",
+            {"type": "object", "properties": {"path": {"type": "string"}}},
+            False, _diagnostics,
+            lambda a: f"진단: {a.get('path', '.')}",
+            lambda a: f"diagnostics({a.get('path', '.')})",
+        ),
+    }
+
+
 def new_registry() -> dict[str, Tool]:
-    return _builtin_tools()
+    reg = _builtin_tools()
+    reg.update(_extra_tools())
+    return reg
 
 
 def make_specs(tools: dict[str, Tool]) -> list[dict]:

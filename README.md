@@ -9,6 +9,7 @@
 
 ## 기능
 - 툴콜 루프 — `read_file`·`list_dir`(자동) / `write_file`·`run_shell`(승인 게이트)
+- 코드 도구 — `search_code`(grep) · `run_tests`(승인) · `diagnostics`(린터/타입체크)
 - MCP — `~/.config/gary-terminal/mcp.json` 서버 연결(예: Obsidian). 읽기 자동·쓰기 승인
 - 마크다운/코드 syntax 렌더링
 - 코드베이스 인식 — `AGENTS.md` 자동 로드 + `@파일` 첨부
@@ -47,3 +48,11 @@
       ]
     }
 `tools` 는 선택(allowlist) — 생략 시 서버의 모든 도구 등록(작은 모델은 과부하 주의).
+
+## 설정 파일
+`~/.config/gary-terminal/config.toml` 로 기본값 지정(예제: `examples/config.toml`).
+환경변수 `GT_*` 가 파일보다 우선.
+
+## 테마
+내장: `gary-dark` · `gary-light` · `gary-mono`. 앱에서 `/theme <이름>` 으로 전환.
+커스텀: `examples/theme.toml` 을 `~/.config/gary-terminal/themes/<이름>.toml` 로 복사·편집(파일명=테마명).

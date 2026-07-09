@@ -1,0 +1,8 @@
+# gary-terminal 설정 — ~/.config/gary-terminal/config.toml 로 복사
+# 환경변수(GT_*)가 이 파일보다 우선합니다.
+backend       = "ollama"                  # ollama | claude
+model         = "qwen2.5-coder:7b"        # ollama 모델
+claude_model  = "sonnet"                  # claude 모델 (sonnet/opus/haiku)
+ollama_host   = "http://localhost:11434"
+context_limit = 8000                      # 초과 시 자동 요약·압축
+theme         = "gary-dark"               # /theme 목록의 이름

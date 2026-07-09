@@ -38,7 +38,7 @@ class Agent:
             "ollama": OllamaBackend(config.ollama_host, config.model),
             "claude": ClaudeCliBackend(config.claude_model),
         }
-        self._backend = self._backends["ollama"]
+        self._backend = self._backends.get(config.backend, self._backends["ollama"])
         self._history: list[dict] = []
         self._approver = approver
         self._project = load_project_context()

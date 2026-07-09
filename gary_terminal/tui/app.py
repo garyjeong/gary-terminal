@@ -25,6 +25,7 @@ from ..engine import (
 )
 from ..engine.session import SessionInfo, SessionStore
 from .completion import compute_completions, list_suggestions
+from .theme import load_themes
 
 HELP_TEXT = """[b]명령어[/b]
   /help            이 도움말
@@ -267,6 +268,13 @@ class GaryTerminalApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        for _th in load_themes():
+            try:
+                self.register_theme(_th)
+            except Exception:
+                pass
+        if self.config.theme and self.config.theme in self.available_themes:
+            self.theme = self.config.theme
         self._update_status()
         self._add(
             "gary-terminal — 로컬 코딩 에이전트. /help 로 명령을 확인하세요.",
