@@ -4,9 +4,11 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from ..config import Config
-from .context import expand_mentions, load_project_context
+from .backend import ClaudeCliBackend, OllamaBackend
+from .context import estimate_tokens, expand_mentions, load_project_context
 from .events import (
     AttachmentEvent,
+    CompactEvent,
     EngineError,
     Event,
     MessageDone,
@@ -15,43 +17,64 @@ from .events import (
     ToolResultEvent,
 )
 from .mcp_client import build_mcp_tools
-from .ollama_client import OllamaClient, OllamaError
+from .ollama_client import OllamaError
 from .tools import ToolResult, make_protocol, make_specs, new_registry, parse_tool_call
+from .usage import UsageTracker
 
 MAX_STEPS = 8
+KEEP_RECENT = 4
 Approver = Callable[[str, str], Awaitable[bool]]
 
 
 class Agent:
-    """대화 상태 + 툴콜 루프를 도는 엔진.
+    """대화 상태 + 툴콜 루프. 백엔드(로컬/구독) 무관.
 
-    도구 레지스트리(self._tools)를 인스턴스가 소유한다: 빌트인 + MCP 동적 등록.
-    approver(name, detail) -> bool: 승인 필요한 도구 실행 전 UI 확인.
+    도구 레지스트리·사용량·컨텍스트 압축을 인스턴스가 소유한다.
     """
 
     def __init__(self, config: Config, approver: Approver | None = None) -> None:
         self.config = config
-        self._client = OllamaClient(config.ollama_host)
+        self._backends: dict[str, object] = {
+            "ollama": OllamaBackend(config.ollama_host, config.model),
+            "claude": ClaudeCliBackend(config.claude_model),
+        }
+        self._backend = self._backends["ollama"]
         self._history: list[dict] = []
         self._approver = approver
         self._project = load_project_context()
         self._tools = new_registry()
+        self.usage = UsageTracker()
         self._rebuild()
 
     def _rebuild(self) -> None:
         self._specs = make_specs(self._tools)
         self._protocol = make_protocol(self._tools)
 
+    # --- 백엔드/모델 ---
+    @property
+    def backend_name(self) -> str:
+        return self._backend.name
+
     @property
     def model(self) -> str:
-        return self.config.model
+        return self._backend.model()
 
+    def set_model(self, name: str) -> None:
+        self._backend.set_model(name)
+
+    def switch_backend(self, name: str) -> bool:
+        if name in self._backends:
+            self._backend = self._backends[name]
+            return True
+        return False
+
+    async def list_models(self) -> list[str]:
+        return await self._backend.list_models()
+
+    # --- 상태 ---
     @property
     def project_name(self) -> str | None:
         return self._project[0] if self._project else None
-
-    def set_model(self, name: str) -> None:
-        self.config.model = name
 
     def reset(self) -> None:
         self._history.clear()
@@ -66,6 +89,9 @@ class Agent:
         self._project = load_project_context()
         return self.project_name
 
+    def context_tokens(self) -> int:
+        return estimate_tokens(self._messages())
+
     async def load_mcp(self) -> list[tuple[str, int, str | None]]:
         tools, summary = await build_mcp_tools()
         for t in tools:
@@ -73,15 +99,48 @@ class Agent:
         self._rebuild()
         return summary
 
-    async def list_models(self) -> list[str]:
-        return await self._client.list_models()
-
     def _messages(self) -> list[dict]:
         system = self.config.system_prompt + "\n\n" + self._protocol
         if self._project:
             name, content = self._project
             system += f"\n\n프로젝트 컨텍스트 ({name}):\n{content}"
         return [{"role": "system", "content": system}, *self._history]
+
+    # --- 컨텍스트 압축 ---
+    async def compact(self, force: bool = False) -> CompactEvent | None:
+        if len(self._history) <= KEEP_RECENT + 1:
+            return None
+        if not force and estimate_tokens(self._history) < self.config.context_limit:
+            return None
+        old = self._history[:-KEEP_RECENT]
+        recent = self._history[-KEEP_RECENT:]
+        summary = await self._summarize(old)
+        self._history = [
+            {"role": "user", "content": f"[이전 대화 요약]\n{summary}"},
+            {"role": "assistant", "content": "요약 확인했습니다. 이어서 진행하겠습니다."},
+            *recent,
+        ]
+        return CompactEvent(removed=len(old), summary_chars=len(summary))
+
+    async def _summarize(self, msgs: list[dict]) -> str:
+        convo = "\n".join(
+            f"{m.get('role')}: {str(m.get('content', ''))[:1500]}" for m in msgs
+        )
+        prompt = [{
+            "role": "user",
+            "content": (
+                "다음 대화를 이후 맥락 유지에 꼭 필요한 핵심만 한국어로 간결히 요약해줘. "
+                "결정사항·다룬 파일·미해결 항목 위주로:\n\n" + convo
+            ),
+        }]
+        text = ""
+        try:
+            async for ch in self._backend.stream_turn(prompt, []):
+                if ch.text:
+                    text += ch.text
+        except Exception:  # noqa: BLE001
+            return "(요약 실패 — 이전 대화 일부 생략)"
+        return text.strip() or "(요약 없음)"
 
     @staticmethod
     def _decide_candidate(stripped: str) -> bool | None:
@@ -101,31 +160,34 @@ class Agent:
         if attached or missing:
             yield AttachmentEvent(attached, missing)
         self._history.append({"role": "user", "content": expanded})
+        compact = await self.compact()
+        if compact is not None:
+            yield compact
         for _ in range(MAX_STEPS):
             buffer = ""
             candidate: bool | None = None
             native: list[dict] = []
+            step_usage = None
             try:
-                async for chunk in self._client.stream_chat(
-                    self.config.model, self._messages(), self._specs
-                ):
-                    msg = chunk.get("message", {})
-                    delta = msg.get("content", "")
-                    if delta:
-                        buffer += delta
+                async for chunk in self._backend.stream_turn(self._messages(), self._specs):
+                    if chunk.text:
+                        buffer += chunk.text
                         if candidate is None:
                             candidate = self._decide_candidate(buffer.lstrip())
                             if candidate is False:
                                 yield TokenEvent(buffer)
                         elif candidate is False:
-                            yield TokenEvent(delta)
-                    if msg.get("tool_calls"):
-                        native.extend(msg["tool_calls"])
-                    if chunk.get("done"):
+                            yield TokenEvent(chunk.text)
+                    if chunk.tool_calls:
+                        native.extend(chunk.tool_calls)
+                    if chunk.usage:
+                        step_usage = chunk.usage
+                    if chunk.done:
                         break
             except OllamaError as exc:
                 yield EngineError(str(exc))
                 return
+            self.usage.add(step_usage)
 
             if candidate is None and not native and buffer:
                 yield TokenEvent(buffer)

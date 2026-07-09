@@ -16,3 +16,6 @@ dist/
 
 # App
 *.log
+
+# claude CLI 헤드리스 산출물
+.omc/

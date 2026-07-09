@@ -1,27 +1,44 @@
 # gary-terminal
 
-로컬에서 완전히 도는 **코딩 에이전트 TUI**. Python 엔진이 Ollama의 로컬 모델과 대화하고,
-Textual TUI가 화면을 담당한다. 토큰 비용 0, 오프라인 동작.
+로컬/구독 모델로 도는 **코딩 에이전트 TUI**. Python 엔진 + Textual TUI.
+
+## 백엔드
+- **ollama** (로컬, 기본) — 완전 오프라인·무료. 기본 모델 `qwen2.5-coder:7b`
+- **claude** (구독) — 로컬 `claude` CLI를 헤드리스로 구동해 **구독 인증을 그대로 상속**
+  전환: `/model claude [sonnet|opus|haiku]` · 되돌리기 `/model ollama`
+
+## 기능
+- 툴콜 루프 — `read_file`·`list_dir`(자동) / `write_file`·`run_shell`(승인 게이트)
+- MCP — `~/.config/gary-terminal/mcp.json` 서버 연결(예: Obsidian). 읽기 자동·쓰기 승인
+- 마크다운/코드 syntax 렌더링
+- 코드베이스 인식 — `AGENTS.md` 자동 로드 + `@파일` 첨부
+- 세션 저장/재개(턴마다 자동 저장) · `Tab` 자동완성
+- 사용량 추적(토큰·환산비용) · 자동 컨텍스트 압축(요약)
 
 ## 구조
-- `gary_terminal/engine` — 모델/에이전트 (Ollama 연결, 대화 루프). UI와 분리돼 있어
-  나중에 이 계층만 HTTP/WS 서버로 빼면 client/server 구조로 확장된다.
-- `gary_terminal/tui` — Textual 기반 화면.
+- `gary_terminal/engine/` — 백엔드(`backend.py`: ollama/claude)·에이전트 루프·도구·MCP·세션·사용량·컨텍스트
+- `gary_terminal/tui/` — Textual 화면(`app.py`, `styles.tcss`), 자동완성
 
 ## 요구사항
-- Python >= 3.11, uv, Ollama (모델 1개 이상 pull)
+- Python ≥ 3.11, uv, Ollama(로컬 모델), (선택) 로그인된 `claude` CLI
 
-## 설치 / 실행
+## 실행
     uv sync
-    uv run gt            # 또는: uv run python -m gary_terminal
+    uv run gt
 
 ## 설정 (환경변수)
-- `GT_OLLAMA_HOST` (기본 `http://localhost:11434`)
-- `GT_MODEL` (기본 `qwen2.5-coder:7b`)
+- `GT_MODEL` (기본 `qwen2.5-coder:7b`) · `GT_OLLAMA_HOST` · `GT_CLAUDE_MODEL` (기본 `sonnet`) · `GT_CONTEXT_LIMIT` (기본 8000)
 
-## TUI 명령
-- `/help` · `/models` · `/model <name>` · `/clear` · `/quit`
-- 단축키: `Ctrl+L` 초기화 · `Esc` 생성 중단 · `Ctrl+C` 종료
+## 명령 (`/help`)
+`/model` `/models` `/usage` `/compact` `/reload` `/save` `/sessions` `/resume` `/clear` `/quit`
+단축키: `Tab` 자동완성 · `Ctrl+L` 초기화 · `Esc` 중단 · `Ctrl+C` 종료
 
-## 스모크 테스트 (TUI 없이 엔진만)
-    uv run python scripts/smoke_engine.py "1+1은?"
+## MCP 설정 예시 (`~/.config/gary-terminal/mcp.json`)
+    {
+      "servers": [
+        {"name": "obsidian", "url": "http://127.0.0.1:27200/mcp",
+         "headers": {"Authorization": "Bearer <token>"},
+         "tools": ["get_vault_file", "search_vault_simple", "list_vault_files"]}
+      ]
+    }
+`tools` 는 선택(allowlist) — 생략 시 서버의 모든 도구 등록(작은 모델은 과부하 주의).

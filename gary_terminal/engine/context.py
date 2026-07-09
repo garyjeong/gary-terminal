@@ -54,3 +54,9 @@ def expand_mentions(text: str, cwd: Path | None = None) -> tuple[str, list[str],
             missing.append(rp)
     expanded = text + "\n\n" + "\n\n".join(blocks) if blocks else text
     return expanded, attached, missing
+
+
+def estimate_tokens(messages: list[dict]) -> int:
+    """메시지 리스트의 대략적 토큰 수(문자수 기반 근사)."""
+    total = sum(len(str(m.get("content", ""))) for m in messages)
+    return int(total / 3.5)
