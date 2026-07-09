@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import os
 from collections.abc import Awaitable, Callable
@@ -84,6 +85,26 @@ async def _run_shell(args: dict) -> ToolResult:
     return ToolResult(True, f"[exit {proc.returncode}]\n{text}", f"{cmd} (exit {proc.returncode})")
 
 
+def _describe_write(a: dict) -> str:
+    path = str(a.get("path", ""))
+    content = str(a.get("content", ""))
+    p = Path(path).expanduser()
+    if p.is_file():
+        try:
+            old = p.read_text(errors="replace")
+        except Exception:
+            old = ""
+        diff = "".join(
+            difflib.unified_diff(
+                old.splitlines(keepends=True),
+                content.splitlines(keepends=True),
+                fromfile=f"a/{path}", tofile=f"b/{path}",
+            )
+        )
+        return f"파일 수정: {path}\n\n{diff[:1500] or '(변경 없음)'}"
+    return f"새 파일: {path}\n\n{content[:1000]}"
+
+
 def _builtin_tools() -> dict[str, Tool]:
     return {
         "read_file": Tool(
@@ -104,7 +125,7 @@ def _builtin_tools() -> dict[str, Tool]:
              "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
              "required": ["path", "content"]},
             True, _write_file,
-            lambda a: f"파일: {a.get('path')}\n\n{str(a.get('content', ''))[:800]}",
+            _describe_write,
             lambda a: f"write_file({a.get('path')})",
         ),
         "run_shell": Tool(

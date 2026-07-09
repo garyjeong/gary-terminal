@@ -346,6 +346,8 @@ class GaryTerminalApp(App):
             self._add(self.agent.usage.summary(), "system", markup=True)
         elif cmd == "compact":
             await self._cmd_compact()
+        elif cmd == "theme":
+            self._cmd_theme(arg)
         elif cmd == "models":
             await self._show_models()
         elif cmd == "model":
@@ -378,6 +380,19 @@ class GaryTerminalApp(App):
         else:
             self._add("압축할 이전 대화가 충분치 않습니다.", "system", markup=True)
         self._update_status()
+
+    def _cmd_theme(self, arg: str) -> None:
+        themes = list(self.available_themes.keys())
+        if not arg:
+            cur = self.theme
+            lines = "\n".join(f"  {'●' if t == cur else '○'} {t}" for t in themes)
+            self._add(f"[b]테마 (/theme <이름>)[/b]\n{lines}", "system", markup=True)
+            return
+        if arg in self.available_themes:
+            self.theme = arg
+            self._add(f"테마 변경 -> {arg}", "system", markup=True)
+        else:
+            self._add(f"알 수 없는 테마: {arg}", "system", markup=True)
 
     async def _show_models(self) -> None:
         try:

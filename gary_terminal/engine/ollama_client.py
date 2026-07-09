@@ -24,6 +24,10 @@ class OllamaClient:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 data = resp.json()
+        except httpx.ConnectError:
+            raise OllamaError(
+                "Ollama 서버에 연결할 수 없습니다. `ollama serve` 실행 여부와 GT_OLLAMA_HOST를 확인하세요."
+            ) from None
         except httpx.HTTPError as exc:
             raise OllamaError(f"Ollama 연결 실패: {exc}") from exc
         return [m["name"] for m in data.get("models", [])]
@@ -52,5 +56,9 @@ class OllamaClient:
                         yield chunk
                         if chunk.get("done"):
                             break
+        except httpx.ConnectError:
+            raise OllamaError(
+                "Ollama 서버에 연결할 수 없습니다. `ollama serve` 실행 여부와 GT_OLLAMA_HOST를 확인하세요."
+            ) from None
         except httpx.HTTPError as exc:
             raise OllamaError(f"Ollama 요청 실패: {exc}") from exc
