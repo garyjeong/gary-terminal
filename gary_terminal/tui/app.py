@@ -40,7 +40,8 @@ HELP_TEXT = """[b]명령어[/b]
   /clear           대화 초기화 (새 세션)
   /quit            종료
 [b]도구[/b] read_file · list_dir (자동) · write_file · run_shell · MCP (승인)
-[b]첨부[/b] @경로/파일   [b]Tab[/b] 자동완성
+[b]첨부[/b] @경로/파일
+[b]키[/b] Enter 전송 · Shift+Enter/Ctrl+J 줄바꿈 · Tab 완성 · 위/아래 히스토리 · Ctrl+R 검색 · Ctrl+L 다시그리기 · Esc 중단 · Ctrl+C/Ctrl+D 종료
 [dim]그 외 입력은 모델에게 전송됩니다.[/dim]"""
 
 
@@ -64,26 +65,40 @@ class Message(Static):
 
 
 class PromptArea(TextArea):
-    """멀티라인 프롬프트 입력.
+    """멀티라인 프롬프트 입력 + 표준 단축키.
 
-    Enter=제출 · Shift+Enter/Ctrl+J=줄바꿈 · Tab=자동완성 · Ctrl+C/Ctrl+D=종료 · Esc=중단
+    Enter=제출 · Shift+Enter/Ctrl+J=줄바꿈 · Tab=자동완성 · Ctrl+C/Ctrl+D=종료
+    Esc=중단 · Ctrl+L=다시그리기 · Ctrl+R=히스토리 역검색 · 위/아래=입력 히스토리
     """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._hist: list[str] = []
+        self._hist_idx: int | None = None
+        self._draft: str = ""
+        self._rsearch_query: str | None = None
+        self._rsearch_pos: int = -1
 
     async def _on_key(self, event: events.Key) -> None:
         key = event.key
         if key == "enter":
             event.prevent_default(); event.stop()
             text = self.text
+            self._record(text)
             self.text = ""
+            self._hist_idx = None
+            self._rsearch_query = None
             await self.app._submit_prompt(text)
             return
         if key in ("shift+enter", "ctrl+j"):
             event.prevent_default(); event.stop()
             self.insert("\n")
+            self._rsearch_query = None
             self._suggest()
             return
         if key == "tab":
             event.prevent_default(); event.stop()
+            self._rsearch_query = None
             self._autocomplete()
             return
         if key in ("ctrl+c", "ctrl+d"):
@@ -92,11 +107,30 @@ class PromptArea(TextArea):
             return
         if key == "escape":
             event.prevent_default(); event.stop()
+            self._rsearch_query = None
             self.app.action_cancel()
             return
+        if key == "ctrl+l":
+            event.prevent_default(); event.stop()
+            self.app.action_redraw()
+            return
+        if key == "ctrl+r":
+            event.prevent_default(); event.stop()
+            self._reverse_search()
+            return
+        if key == "up" and self.cursor_location[0] == 0:
+            event.prevent_default(); event.stop()
+            self._history_prev()
+            return
+        if key == "down" and self.cursor_location[0] == self.document.line_count - 1:
+            event.prevent_default(); event.stop()
+            self._history_next()
+            return
         await super()._on_key(event)
+        self._rsearch_query = None
         self._suggest()
 
+    # --- 자동완성 ---
     def _line_prefix(self) -> tuple[str, int, int]:
         row, col = self.cursor_location
         line = self.document.get_line(row)
@@ -108,15 +142,65 @@ class PromptArea(TextArea):
         if new != prefix:
             self.replace(new, (row, 0), (row, col))
             self.move_cursor((row, len(new)))
-        show = getattr(self.app, "_show_completions", None)
-        if show:
-            show(cands)
+        self._hint(cands)
 
     def _suggest(self) -> None:
         prefix, _, _ = self._line_prefix()
+        self._hint(list_suggestions(prefix))
+
+    def _hint(self, items: list[str]) -> None:
         show = getattr(self.app, "_show_completions", None)
         if show:
-            show(list_suggestions(prefix))
+            show(items)
+
+    # --- 입력 히스토리 (위/아래) ---
+    def _record(self, text: str) -> None:
+        t = text.strip()
+        if t and (not self._hist or self._hist[-1] != t):
+            self._hist.append(t)
+
+    def _set_text(self, t: str) -> None:
+        self.text = t
+        self.move_cursor(self.document.end)
+
+    def _history_prev(self) -> None:
+        if not self._hist:
+            return
+        if self._hist_idx is None:
+            self._draft = self.text
+            self._hist_idx = len(self._hist) - 1
+        else:
+            self._hist_idx = max(0, self._hist_idx - 1)
+        self._set_text(self._hist[self._hist_idx])
+        self._suggest()
+
+    def _history_next(self) -> None:
+        if self._hist_idx is None:
+            return
+        if self._hist_idx >= len(self._hist) - 1:
+            self._hist_idx = None
+            self._set_text(self._draft)
+        else:
+            self._hist_idx += 1
+            self._set_text(self._hist[self._hist_idx])
+        self._suggest()
+
+    # --- Ctrl+R 역검색(간이: 부분일치, 반복 시 이전 항목 순환) ---
+    def _reverse_search(self) -> None:
+        if not self._hist:
+            self._hint(["역검색: 히스토리 없음"])
+            return
+        if self._rsearch_query is None:
+            self._rsearch_query = self.text.strip()
+            self._rsearch_pos = -1
+        q = self._rsearch_query
+        matches = [h for h in reversed(self._hist) if q in h]
+        if not matches:
+            self._hint([f"역검색 '{q}': 없음"])
+            return
+        self._rsearch_pos = (self._rsearch_pos + 1) % len(matches)
+        self._set_text(matches[self._rsearch_pos])
+        self._hint([f"역검색 '{q}' ({self._rsearch_pos + 1}/{len(matches)}) · Enter=선택"])
 
 
 class ApprovalScreen(ModalScreen[str]):
@@ -158,7 +242,7 @@ class GaryTerminalApp(App):
     CSS_PATH = "styles.tcss"
     TITLE = "gary-terminal"
     BINDINGS = [
-        ("ctrl+l", "clear", "초기화"),
+        ("ctrl+l", "redraw", "다시그리기"),
         ("escape", "cancel", "중단"),
         ("ctrl+c", "quit", "종료"),
         ("ctrl+d", "quit", "종료"),
@@ -430,6 +514,10 @@ class GaryTerminalApp(App):
 
     def action_quit(self) -> None:
         self.exit()
+
+    def action_redraw(self) -> None:
+        self.refresh(layout=True)
+        self.query_one("#conversation", VerticalScroll).refresh(layout=True)
 
     def action_clear(self) -> None:
         self.agent.reset()
