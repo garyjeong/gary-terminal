@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -28,7 +29,12 @@ HELP_TEXT = """[b]명령어[/b]
 
 
 class Message(Static):
-    """대화 한 줄. markup=True면 Rich 마크업 해석(시스템/도구), False면 리터럴."""
+    """대화 한 줄.
+
+    - markup=True: Rich 마크업 해석(시스템/도구 메시지)
+    - markup=False: 리터럴(사용자 입력, 스트리밍 중 어시스턴트)
+    - finalize_markdown(): 완료된 어시스턴트 답을 마크다운(코드 하이라이트)으로 재렌더
+    """
 
     def __init__(self, text: str, role: str, markup: bool = False) -> None:
         super().__init__(classes=f"msg {role}")
@@ -42,6 +48,10 @@ class Message(Static):
     def add_delta(self, delta: str) -> None:
         self._buffer += delta
         self._sync()
+
+    def finalize_markdown(self) -> None:
+        if self._buffer.strip():
+            self.update(RichMarkdown(self._buffer))
 
 
 class ApprovalScreen(ModalScreen[str]):
@@ -198,9 +208,12 @@ class GaryTerminalApp(App):
                     icon = "✅" if ev.ok else "⚠️"
                     self._add(f"{icon} {ev.name} · {ev.summary}", "tool")
                 elif isinstance(ev, MessageDone):
-                    if current is None and not ev.content.strip():
+                    if current is not None:
+                        current.finalize_markdown()
+                        current = None
+                    else:
                         self._add("(빈 응답)", "assistant")
-                    current = None
+                    self._scroll_end()
                 elif isinstance(ev, EngineError):
                     current = None
                     self._add(f"[오류] {ev.message}", "error")

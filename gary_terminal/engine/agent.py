@@ -49,11 +49,29 @@ class Agent:
         system = self.config.system_prompt + "\n\n" + tools_protocol_text()
         return [{"role": "system", "content": system}, *self._history]
 
+    @staticmethod
+    def _decide_candidate(stripped: str) -> bool | None:
+        """버퍼 앞부분으로 '본문이 툴콜 JSON인가'를 판정.
+
+        True=툴콜 후보(스트리밍 숨김) / False=일반 텍스트(스트리밍) / None=판단 보류.
+        JSON 객체({...})와 ```json 펜스만 후보로 보고, ```python 등 코드 답변은 흘린다.
+        """
+        if not stripped:
+            return None
+        if stripped[0] == "{":
+            return True
+        if stripped.startswith("```"):
+            if "\n" not in stripped:
+                return None  # 펜스 언어가 아직 안 옴 → 보류
+            lang = stripped[3 : stripped.index("\n")].strip().lower()
+            return lang == "json"
+        return False
+
     async def send(self, user_text: str) -> AsyncIterator[Event]:
         self._history.append({"role": "user", "content": user_text})
         for _ in range(MAX_STEPS):
             buffer = ""
-            candidate: bool | None = None  # 본문이 툴콜 JSON일 가능성
+            candidate: bool | None = None
             native: list[dict] = []
             try:
                 async for chunk in self._client.stream_chat(
@@ -64,11 +82,9 @@ class Agent:
                     if delta:
                         buffer += delta
                         if candidate is None:
-                            stripped = buffer.lstrip()
-                            if stripped:
-                                candidate = stripped[0] in "{`["
-                                if candidate is False:
-                                    yield TokenEvent(buffer)
+                            candidate = self._decide_candidate(buffer.lstrip())
+                            if candidate is False:
+                                yield TokenEvent(buffer)
                         elif candidate is False:
                             yield TokenEvent(delta)
                     if msg.get("tool_calls"):
@@ -79,12 +95,16 @@ class Agent:
                 yield EngineError(str(exc))
                 return
 
+            # 스트림이 끝났는데 판단 보류였던 짧은 버퍼는 텍스트로 흘림
+            if candidate is None and not native and buffer:
+                yield TokenEvent(buffer)
+                candidate = False
+
             calls = self._collect_calls(native, candidate, buffer)
 
             if not calls:
-                # 툴콜로 보였으나 파싱 실패한 버퍼는 텍스트로 흘려보냄
                 if candidate and not native:
-                    yield TokenEvent(buffer)
+                    yield TokenEvent(buffer)  # 툴콜로 보였으나 아님 → 텍스트로 노출
                 self._history.append({"role": "assistant", "content": buffer})
                 yield MessageDone(buffer)
                 return
