@@ -36,6 +36,21 @@ class ToolResultEvent:
 
 
 @dataclass(frozen=True)
+class EscalateEvent:
+    """로컬 백엔드 실패 → 상위 백엔드로 자동 승격."""
+
+    from_backend: str
+    to_backend: str
+
+
+@dataclass(frozen=True)
+class PlanEvent:
+    """계획/TODO 갱신."""
+
+    items: list[dict] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class MessageDone:
     content: str
 
@@ -49,6 +64,8 @@ Event = (
     TokenEvent
     | AttachmentEvent
     | CompactEvent
+    | EscalateEvent
+    | PlanEvent
     | ToolCallEvent
     | ToolResultEvent
     | MessageDone

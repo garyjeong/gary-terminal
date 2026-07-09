@@ -6,3 +6,5 @@ claude_model  = "sonnet"                  # claude 모델 (sonnet/opus/haiku)
 ollama_host   = "http://localhost:11434"
 context_limit = 8000                      # 초과 시 자동 요약·압축
 theme         = "gary-dark"               # /theme 목록의 이름
+auto_escalate = false           # 로컬 실패 시 자동 승격
+escalate_to   = "claude"        # 승격 대상 백엔드

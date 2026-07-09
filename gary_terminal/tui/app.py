@@ -18,7 +18,9 @@ from ..engine import (
     AttachmentEvent,
     CompactEvent,
     EngineError,
+    EscalateEvent,
     MessageDone,
+    PlanEvent,
     TokenEvent,
     ToolCallEvent,
     ToolResultEvent,
@@ -40,6 +42,8 @@ HELP_TEXT = """[b]명령어[/b]
   /theme [이름]    테마 목록/변경
   /search <말>     대화에서 찾아 하이라이트
   /copy            마지막 답변 클립보드 복사
+  /auto [on|off]   로컬 실패 시 Claude 자동 승격 토글
+  /plan            현재 계획/TODO 표시
   /save · /sessions · /resume <번호>   세션 저장/목록/재개
   /clear           대화 초기화 (새 세션)
   /quit            종료
@@ -373,6 +377,10 @@ class GaryTerminalApp(App):
             self._cmd_search(arg)
         elif cmd == "copy":
             self._cmd_copy(arg)
+        elif cmd == "auto":
+            self._cmd_auto(arg)
+        elif cmd == "plan":
+            self._show_plan(self.agent.plan)
         elif cmd == "models":
             await self._show_models()
         elif cmd == "model":
@@ -432,6 +440,30 @@ class GaryTerminalApp(App):
         text = msgs[-1]._buffer
         self.copy_to_clipboard(text)
         self._add(f"마지막 답변을 클립보드에 복사했습니다 ({len(text)}자).", "system", markup=True)
+
+    def _cmd_auto(self, arg: str) -> None:
+        a = arg.lower()
+        if a in ("on", "true", "1"):
+            self.agent.config.auto_escalate = True
+        elif a in ("off", "false", "0"):
+            self.agent.config.auto_escalate = False
+        else:
+            self.agent.config.auto_escalate = not self.agent.config.auto_escalate
+        state = "켜짐" if self.agent.config.auto_escalate else "꺼짐"
+        self._add(
+            f"자동 에스컬레이션: {state} (로컬 실패 시 {self.agent.config.escalate_to}로 승격)",
+            "system", markup=True,
+        )
+
+    def _show_plan(self, items: list[dict]) -> None:
+        if not items:
+            self._add("📋 (계획 없음)", "plan", markup=True)
+            return
+        icons = {"pending": "☐", "in_progress": "▶", "done": "☑", "completed": "☑"}
+        rows = "\n".join(
+            f"  {icons.get(t.get('status'), '☐')} {escape(str(t.get('content', '')))}" for t in items
+        )
+        self._add(f"[b]📋 계획[/b]\n{rows}", "plan", markup=True)
 
     def _cmd_theme(self, arg: str) -> None:
         themes = list(self.available_themes.keys())
@@ -561,6 +593,12 @@ class GaryTerminalApp(App):
                         f"🗜️ 컨텍스트 압축: 이전 {ev.removed}개 메시지 → 요약({ev.summary_chars}자)",
                         "tool",
                     )
+                elif isinstance(ev, EscalateEvent):
+                    current = None
+                    self._add(f"⤴ {ev.from_backend} 실패 → {ev.to_backend}로 에스컬레이션", "system", markup=True)
+                elif isinstance(ev, PlanEvent):
+                    current = None
+                    self._show_plan(ev.items)
                 elif isinstance(ev, ToolCallEvent):
                     current = None
                     self._add(f"🔧 {ev.summary}", "tool")

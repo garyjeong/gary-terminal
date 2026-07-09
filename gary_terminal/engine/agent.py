@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -10,29 +11,39 @@ from .events import (
     AttachmentEvent,
     CompactEvent,
     EngineError,
+    EscalateEvent,
     Event,
     MessageDone,
+    PlanEvent,
     TokenEvent,
     ToolCallEvent,
     ToolResultEvent,
 )
 from .mcp_client import build_mcp_tools
 from .ollama_client import OllamaError
-from .tools import ToolResult, make_protocol, make_specs, new_registry, parse_tool_call
+from .tools import Tool, ToolResult, make_protocol, make_specs, new_registry, parse_tool_call
 from .usage import UsageTracker
 
 MAX_STEPS = 8
 KEEP_RECENT = 4
+MAX_SUBAGENTS = 5
 Approver = Callable[[str, str], Awaitable[bool]]
 
 
 class Agent:
     """대화 상태 + 툴콜 루프. 백엔드(로컬/구독) 무관.
 
-    도구 레지스트리·사용량·컨텍스트 압축을 인스턴스가 소유한다.
+    - auto_escalate: 로컬 백엔드 실패 시 상위 백엔드로 자동 재시도
+    - spawn_agents: 병렬 서브에이전트(읽기 전용 도구)
+    - update_plan: 계획/TODO 추적
     """
 
-    def __init__(self, config: Config, approver: Approver | None = None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        approver: Approver | None = None,
+        allow_meta_tools: bool = True,
+    ) -> None:
         self.config = config
         self._backends: dict[str, object] = {
             "ollama": OllamaBackend(config.ollama_host, config.model),
@@ -42,8 +53,12 @@ class Agent:
         self._history: list[dict] = []
         self._approver = approver
         self._project = load_project_context()
-        self._tools = new_registry()
         self.usage = UsageTracker()
+        self.plan: list[dict] = []
+        self._tools = new_registry()
+        if allow_meta_tools:
+            self._tools["spawn_agents"] = self._make_spawn_tool()
+            self._tools["update_plan"] = self._make_plan_tool()
         self._rebuild()
 
     def _rebuild(self) -> None:
@@ -78,6 +93,7 @@ class Agent:
 
     def reset(self) -> None:
         self._history.clear()
+        self.plan.clear()
 
     def export_history(self) -> list[dict]:
         return list(self._history)
@@ -106,6 +122,81 @@ class Agent:
             system += f"\n\n프로젝트 컨텍스트 ({name}):\n{content}"
         return [{"role": "system", "content": system}, *self._history]
 
+    # --- 계획/TODO ---
+    def render_plan(self) -> str:
+        if not self.plan:
+            return "📋 (계획 없음)"
+        icons = {"pending": "☐", "in_progress": "▶", "done": "☑", "completed": "☑"}
+        rows = "\n".join(f"  {icons.get(t.get('status'), '☐')} {t.get('content', '')}" for t in self.plan)
+        return "📋 계획\n" + rows
+
+    def _make_plan_tool(self) -> Tool:
+        async def run(args: dict) -> ToolResult:
+            items = args.get("tasks") or args.get("todos") or args.get("plan") or []
+            plan: list[dict] = []
+            for it in items:
+                if isinstance(it, dict):
+                    plan.append({
+                        "content": str(it.get("content") or it.get("task") or ""),
+                        "status": str(it.get("status", "pending")),
+                    })
+                elif isinstance(it, str):
+                    plan.append({"content": it, "status": "pending"})
+            self.plan = plan
+            return ToolResult(True, self.render_plan(), f"계획 {len(plan)}개")
+
+        return Tool(
+            "update_plan",
+            "Record or update the task plan/todo list. Each item: {content, status: pending|in_progress|done}.",
+            {"type": "object", "properties": {"tasks": {"type": "array", "items": {
+                "type": "object", "properties": {
+                    "content": {"type": "string"}, "status": {"type": "string"}}}}},
+             "required": ["tasks"]},
+            False, run, lambda a: "계획 갱신", lambda a: "update_plan()",
+        )
+
+    # --- 서브에이전트(병렬) ---
+    def _make_spawn_tool(self) -> Tool:
+        async def run(args: dict) -> ToolResult:
+            tasks = args.get("tasks") or []
+            if isinstance(tasks, str):
+                tasks = [tasks]
+            tasks = [str(t) for t in tasks if str(t).strip()][:MAX_SUBAGENTS]
+            if not tasks:
+                return ToolResult(False, "tasks 누락", "tasks 누락")
+            results = await asyncio.gather(*[self._run_subagent(t) for t in tasks])
+            body = "\n\n".join(
+                f"[서브에이전트 {i + 1}] {t}\n{r}" for i, (t, r) in enumerate(zip(tasks, results))
+            )
+            return ToolResult(True, body, f"서브에이전트 {len(tasks)}개")
+
+        return Tool(
+            "spawn_agents",
+            "Run several independent sub-tasks in parallel sub-agents (read-only tools). "
+            "Use for research/exploration that can be split up.",
+            {"type": "object",
+             "properties": {"tasks": {"type": "array", "items": {"type": "string"}}},
+             "required": ["tasks"]},
+            False, run,
+            lambda a: f"병렬 서브에이전트 {len(a.get('tasks', []))}개",
+            lambda a: f"spawn_agents({len(a.get('tasks', []))})",
+        )
+
+    async def _run_subagent(self, task: str) -> str:
+        sub = Agent(self.config, approver=None, allow_meta_tools=False)
+        text = ""
+        try:
+            async for ev in sub.send(task):
+                if isinstance(ev, TokenEvent):
+                    text += ev.text
+                elif isinstance(ev, MessageDone):
+                    text = ev.content
+                elif isinstance(ev, EngineError):
+                    return f"(오류: {ev.message})"
+        except Exception as exc:  # noqa: BLE001
+            return f"(예외: {exc})"
+        return text.strip()[:4000] or "(빈 응답)"
+
     # --- 컨텍스트 압축 ---
     async def compact(self, force: bool = False) -> CompactEvent | None:
         if len(self._history) <= KEEP_RECENT + 1:
@@ -123,9 +214,7 @@ class Agent:
         return CompactEvent(removed=len(old), summary_chars=len(summary))
 
     async def _summarize(self, msgs: list[dict]) -> str:
-        convo = "\n".join(
-            f"{m.get('role')}: {str(m.get('content', ''))[:1500]}" for m in msgs
-        )
+        convo = "\n".join(f"{m.get('role')}: {str(m.get('content', ''))[:1500]}" for m in msgs)
         prompt = [{
             "role": "user",
             "content": (
@@ -155,6 +244,20 @@ class Agent:
             return lang == "json"
         return False
 
+    # --- 실행 ---
+    def _can_escalate(self) -> bool:
+        return (
+            self.config.auto_escalate
+            and self.config.escalate_to in self._backends
+            and self._backend.name != self.config.escalate_to
+        )
+
+    def _trim_to_last_user(self) -> None:
+        for i in range(len(self._history) - 1, -1, -1):
+            if self._history[i].get("role") == "user":
+                del self._history[i + 1:]
+                return
+
     async def send(self, user_text: str) -> AsyncIterator[Event]:
         expanded, attached, missing = expand_mentions(user_text)
         if attached or missing:
@@ -163,6 +266,25 @@ class Agent:
         compact = await self.compact()
         if compact is not None:
             yield compact
+
+        escalated = False
+        async for ev in self._run_loop():
+            if isinstance(ev, EngineError) and not escalated and self._can_escalate():
+                escalated = True
+                target = self.config.escalate_to
+                yield EscalateEvent(self._backend.name, target)
+                self._trim_to_last_user()
+                saved = self._backend
+                self._backend = self._backends[target]
+                try:
+                    async for ev2 in self._run_loop():
+                        yield ev2
+                finally:
+                    self._backend = saved
+                return
+            yield ev
+
+    async def _run_loop(self) -> AsyncIterator[Event]:
         for _ in range(MAX_STEPS):
             buffer = ""
             candidate: bool | None = None
@@ -212,6 +334,8 @@ class Agent:
                 self._history.append(
                     {"role": "tool", "content": result.content, "tool_name": name}
                 )
+                if name == "update_plan":
+                    yield PlanEvent(list(self.plan))
         yield EngineError(f"최대 도구 단계({MAX_STEPS}) 초과")
 
     def _collect_calls(

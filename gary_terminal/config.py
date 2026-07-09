@@ -28,6 +28,8 @@ class Config:
     context_limit: int = DEFAULT_CONTEXT_LIMIT
     backend: str = DEFAULT_BACKEND
     theme: str | None = None
+    auto_escalate: bool = False
+    escalate_to: str = "claude"
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     @classmethod
@@ -38,6 +40,9 @@ class Config:
                 data = tomllib.loads(CONFIG_PATH.read_text())
             except Exception:
                 data = {}
+
+        def as_bool(x):
+            return x if isinstance(x, bool) else str(x).strip().lower() in ("1", "true", "yes", "on")
 
         def pick(key, default, cast=str):
             env = os.environ.get("GT_" + key.upper())
@@ -60,5 +65,7 @@ class Config:
             context_limit=pick("context_limit", DEFAULT_CONTEXT_LIMIT, int),
             backend=pick("backend", DEFAULT_BACKEND),
             theme=pick("theme", None) or None,
+            auto_escalate=pick("auto_escalate", False, as_bool),
+            escalate_to=pick("escalate_to", "claude"),
             system_prompt=pick("system_prompt", DEFAULT_SYSTEM_PROMPT),
         )

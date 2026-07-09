@@ -55,6 +55,11 @@ Screen {
     background: $warning 30%;
 }
 
+.msg.plan {
+    color: $secondary;
+    border-left: thick $secondary;
+}
+
 ApprovalScreen {
     align: center middle;
 }
